@@ -151,22 +151,64 @@ function waitForDrain(encoder: VideoEncoder): Promise<void> {
   });
 }
 
-async function pickAvcCodec(
+/**
+ * Candidatos H.264 ordenados de mayor a menor nivel: L5.2 cubre 4K60,
+ * L4.0 cubre 1080p30; Baseline como último recurso (máxima compatibilidad).
+ * `isConfigSupported` puede devolver `true` y aun así fallar la
+ * inicialización real (p. ej. sin codificador H.264 disponible), por eso
+ * cada candidato se valida con un `configure()` real sobre un encoder
+ * temporal antes de usarlo en la conversión.
+ */
+const AVC_CANDIDATES = ['avc1.640034', 'avc1.640028', 'avc1.42001f', 'avc1.42001e'];
+const ACCEL_CANDIDATES: HardwareAcceleration[] = ['prefer-hardware', 'prefer-software'];
+
+interface AvcConfig {
+  codec: string;
+  hardwareAcceleration: HardwareAcceleration;
+}
+
+async function pickAvcConfig(
   width: number,
   height: number,
   bitrate: number,
   framerate: number,
-): Promise<string> {
-  const candidates = ['avc1.640028', 'avc1.42001e'];
-  for (const codec of candidates) {
+): Promise<AvcConfig> {
+  const safeBitrate = Math.max(100_000, Math.floor(bitrate) || 5_000_000);
+  for (const codec of AVC_CANDIDATES) {
     try {
-      const support = await VideoEncoder.isConfigSupported({ codec, width, height, bitrate, framerate });
-      if (support.supported) return codec;
+      const support = await VideoEncoder.isConfigSupported({
+        codec,
+        width,
+        height,
+        bitrate: safeBitrate,
+        framerate,
+      });
+      if (!support.supported) continue;
     } catch {
-      /* probar siguiente */
+      continue; // este candidato ni se anuncia: probar el siguiente
+    }
+    for (const hardwareAcceleration of ACCEL_CANDIDATES) {
+      const probe = new VideoEncoder({ output: () => undefined, error: () => undefined });
+      try {
+        probe.configure({ codec, width, height, bitrate: safeBitrate, framerate, hardwareAcceleration });
+        if (probe.state === 'configured') {
+          return { codec, hardwareAcceleration };
+        }
+      } catch {
+        /* configure() lanzó de forma síncrona: probar siguiente */
+      } finally {
+        try {
+          probe.close();
+        } catch {
+          /* ya cerrado */
+        }
+      }
     }
   }
-  throw new Error('Este navegador no soporta codificación H.264 (WebCodecs).');
+  throw new Error(
+    'Este navegador no pudo inicializar el codificador H.264 con este vídeo ' +
+      '(prueba con formato WebM o con una resolución menor).',
+  );
 }
 
 /** Decodifica el audio del vídeo a estéreo 44.1kHz; null si no hay audio. */
@@ -285,6 +327,7 @@ async function convertToMp4(
     const { width: W, height: H } = targetSize(loaded.width, loaded.height, opts.resolution);
     const totalFrames = Math.max(1, Math.floor(duration * fps));
     const frameDurationUs = Math.max(1, Math.round(1_000_000 / fps));
+    const safeBitrate = Math.max(100_000, Math.floor(opts.bitrate) || 5_000_000);
     onProgress?.(0.03);
 
     // Audio en paralelo conceptual: se decodifica/codifica antes del bucle de vídeo.
@@ -324,7 +367,7 @@ async function convertToMp4(
             firstTimestampBehavior: 'offset',
           });
 
-    const codec = await pickAvcCodec(W, H, opts.bitrate, fps);
+    const avc = await pickAvcConfig(W, H, safeBitrate, fps);
     const videoChunks: { chunk: EncodedVideoChunk; meta: EncodedVideoChunkMetadata | undefined }[] =
       [];
     let encodeError: Error | null = null;
@@ -333,17 +376,45 @@ async function convertToMp4(
         videoChunks.push({ chunk, meta });
       },
       error: (e) => {
-        encodeError = new Error(e.message || 'Error del codificador de vídeo.');
+        if (!encodeError) {
+          encodeError = new Error(
+            (e.message || 'Error del codificador de vídeo.') +
+              ' Prueba con formato WebM o con una resolución menor.',
+          );
+        }
       },
     });
-    videoEncoder.configure({
-      codec,
-      width: W,
-      height: H,
-      bitrate: opts.bitrate,
-      framerate: fps,
-      hardwareAcceleration: 'prefer-hardware',
-    });
+    try {
+      videoEncoder.configure({
+        codec: avc.codec,
+        width: W,
+        height: H,
+        bitrate: safeBitrate,
+        framerate: fps,
+        hardwareAcceleration: avc.hardwareAcceleration,
+      });
+    } catch (e) {
+      throw new Error(
+        `No se pudo configurar el codificador H.264 (${avc.codec}): ` +
+          `${e instanceof Error ? e.message : 'error desconocido'}. ` +
+          'Prueba con formato WebM o con una resolución menor.',
+      );
+    }
+    if (videoEncoder.state !== 'configured') {
+      throw new Error(
+        'El codificador H.264 no quedó configurado. Prueba con formato WebM o con una resolución menor.',
+      );
+    }
+    /** Lanza la causa REAL si el encoder murió de forma asíncrona. */
+    const assertEncoderAlive = (): void => {
+      if (encodeError) throw encodeError;
+      if (!videoEncoder || videoEncoder.state !== 'configured') {
+        throw new Error(
+          'El codificador de vídeo se detuvo de forma inesperada. ' +
+            'Prueba con formato WebM o con una resolución menor.',
+        );
+      }
+    };
 
     const canvas = document.createElement('canvas');
     canvas.width = W;
@@ -352,14 +423,27 @@ async function convertToMp4(
     if (!ctx) throw new Error('Canvas 2D no disponible en este navegador.');
 
     for (let i = 0; i < totalFrames; i++) {
-      if (encodeError) throw encodeError;
+      assertEncoderAlive();
       const t = Math.min(i / fps, Math.max(0, duration - 0.05));
       await seekVideo(video, t);
+      // El encoder puede morir durante el seek (callback de error asíncrono):
+      // comprobar ANTES de encode() para no ver el críptico
+      // "VideoEncoder.encode: Encoder must be configured first".
+      assertEncoderAlive();
       ctx.drawImage(video, 0, 0, W, H);
       const timestamp = Math.round((i * 1_000_000) / fps);
       const frame = new VideoFrame(canvas, { timestamp, duration: frameDurationUs });
       try {
-        videoEncoder.encode(frame, { keyFrame: i % 60 === 0 });
+        try {
+          videoEncoder.encode(frame, { keyFrame: i % 60 === 0 });
+        } catch (e) {
+          if (encodeError) throw encodeError;
+          throw new Error(
+            `Fallo al codificar el cuadro ${i + 1}/${totalFrames}: ` +
+              `${e instanceof Error ? e.message : 'error desconocido'}. ` +
+              'Prueba con formato WebM o con una resolución menor.',
+          );
+        }
       } finally {
         frame.close();
       }
@@ -367,7 +451,7 @@ async function convertToMp4(
       onProgress?.(0.08 + (0.82 * (i + 1)) / totalFrames);
     }
     await videoEncoder.flush();
-    if (encodeError) throw encodeError;
+    assertEncoderAlive();
 
     for (const { chunk, meta } of videoChunks) muxer.addVideoChunk(chunk, meta);
     for (const { chunk, meta } of audioChunks) muxer.addAudioChunk(chunk, meta);
