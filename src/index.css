@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    background-color: #09090b;
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-dark-950 text-slate-100;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #121316;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #2e323b;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3f4450;
+  }
+
+  /* Firefox scrollbar parity */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #2e323b #121316;
+  }
+
+  /* Controles de formulario en tema oscuro */
+  input[type='range'] {
+    accent-color: #10b981;
+  }
+  input,
+  select,
+  textarea {
+    color-scheme: dark;
+  }
+}
+
+.no-select {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Barra de progreso de cada job: transición suave entre updates. */
+.job-progress-fill {
+  transition: width 150ms linear;
+}

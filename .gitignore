@@ -1,0 +1,14 @@
+# deps
+node_modules/
+
+# build
+dist/
+
+# test artefacts
+test-artifacts/
+apps/hydra-convert/test-artifacts/
+
+# logs / os
+npm-debug.log*
+*.log
+.DS_Store

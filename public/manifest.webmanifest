@@ -1,0 +1,16 @@
+{
+  "name": "Hydra Convert",
+  "short_name": "Convert",
+  "description": "Conversor de vídeo, audio e imagen 100% local en tu navegador.",
+  "display": "standalone",
+  "start_url": "/",
+  "theme_color": "#09090b",
+  "background_color": "#09090b",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2310b981'><path d='M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm4 4v8l8-4-8-4z'/></svg>",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
