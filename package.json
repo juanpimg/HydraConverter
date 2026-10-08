@@ -10,7 +10,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "node scripts/test-convert.mjs",
+    "test:video": "node scripts/test-video-matrix.mjs",
+    "test:firefox": "node scripts/test-firefox-convert.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",
