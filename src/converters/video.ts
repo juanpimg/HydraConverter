@@ -8,15 +8,16 @@
  * - mp3:     la plataforma web no tiene codificador MP3; se genera
  *            AAC (`audio/mp4`) con extensión `.m4a`, reproducible en
  *            todos los reproductores (reutiliza convertAudio).
- * - mp4:     VideoEncoder (H.264) + AudioEncoder (AAC) + Muxer.
+ * - mp4:     VideoEncoder (H.264 con respaldo VP9) + AudioEncoder
+ *            (AAC con respaldo Opus) + Muxer.
  * - webm:    canvas.captureStream + pista de audio (MediaElementSource)
  *            -> MediaRecorder (VP9/VP8 + Opus), grabación en tiempo real.
  * - gif:     muestreo de frames + codificador GIF89a inline mínimo
  *            (paleta global 3-3-2 de 256 colores, LZW propio, sin
  *            dithering, bucle infinito).
  */
-import { ArrayBufferTarget, Muxer } from 'mp4-muxer';
-import { convertAudio, encodeAudioBufferToAac, type AacChunk } from './audio';
+import { ArrayBufferTarget, Muxer, type MuxerOptions } from 'mp4-muxer';
+import { convertAudio, encodeAudioBuffer, encodeAudioBufferToAac, type AacChunk } from './audio';
 
 export type VideoOutputFormat = 'mp4' | 'webm' | 'gif' | 'mp3' | 'wav' | 'png' | 'jpg';
 
@@ -136,10 +137,10 @@ function targetSize(w: number, h: number, resolution: string): { width: number; 
   return { width: even(w * scale), height: even(targetH) };
 }
 
-/** Prefijo contractual: todo error fatal del H.264 lo lleva (la UI depende de él). */
+/** Prefijo contractual: todo error fatal sin encoder de vídeo lo lleva (la UI depende de él). */
 const H264_PREFIX = 'H264_NO_DISPONIBLE: ';
 
-/** Construye un error fatal del H.264 con el prefijo contractual + sugerencia. */
+/** Construye un error fatal de vídeo con el prefijo contractual + sugerencia. */
 function h264Error(detail: string): Error {
   const clean = detail.trim().replace(/\.*\s*$/, '');
   return new Error(`${H264_PREFIX}${clean}. Prueba con formato WebM o con una resolución menor.`);
@@ -160,13 +161,17 @@ function isInvalidStateError(e: unknown): boolean {
  * Si el encoder muere esperando, lanza la causa real guardada (nunca se
  * queda colgado esperando un `dequeue` que ya no llegará).
  */
-async function waitForDrain(encoder: VideoEncoder, getFatal: () => Error | null): Promise<void> {
+async function waitForDrain(
+  encoder: VideoEncoder,
+  getFatal: () => Error | null,
+  label: string,
+): Promise<void> {
   for (;;) {
     try {
       const fatal = getFatal();
       if (fatal) throw fatal;
       if (encoder.state !== 'configured') {
-        throw getFatal() ?? h264Error('El codificador H.264 se detuvo de forma inesperada');
+        throw getFatal() ?? h264Error(`El codificador ${label} se detuvo de forma inesperada`);
       }
       if (encoder.encodeQueueSize <= 3) return;
     } catch (e) {
@@ -180,7 +185,7 @@ async function waitForDrain(encoder: VideoEncoder, getFatal: () => Error | null)
       })();
       if (fatal) throw fatal;
       if (isInvalidStateError(e)) {
-        throw h264Error('El codificador H.264 se detuvo de forma inesperada');
+        throw h264Error(`El codificador ${label} se detuvo de forma inesperada`);
       }
       throw e;
     }
@@ -193,92 +198,123 @@ async function waitForDrain(encoder: VideoEncoder, getFatal: () => Error | null)
  * L4.0 cubre 1080p30; Baseline como último recurso (máxima compatibilidad).
  * `isConfigSupported` y un `configure()` aislado pueden dar falso positivo
  * (aceptan la config pero el codec muere al primer frame), por eso cada
- * candidato se valida con configure() + UN frame real de prueba (canvas
- * 64x64) + flush() sobre un encoder temporal antes de darlo por bueno.
+ * candidato se valida con una codificación real antes de darlo por bueno.
  */
 const AVC_CANDIDATES = ['avc1.640034', 'avc1.640028', 'avc1.42001f', 'avc1.42001e'];
 const ACCEL_CANDIDATES: HardwareAcceleration[] = ['prefer-hardware', 'prefer-software'];
 
-interface AvcConfig {
+/**
+ * Candidatos VP9 (perfil 0, niveles 1.0/3.1/4.1) para el respaldo en MP4:
+ * Firefox no tiene H.264 operativo pero sí VP9, y el MP4 resultante es
+ * reproducible en Chrome/Firefox/Edge. `prefer-software` primero: los
+ * aceleradores de hardware a veces aceptan la config y fallan al primer
+ * frame real.
+ */
+const VP9_CANDIDATES = ['vp09.00.10.08', 'vp09.00.31.08', 'vp09.00.41.08'];
+const VP9_ACCEL_CANDIDATES: (HardwareAcceleration | undefined)[] = ['prefer-software', undefined];
+
+interface PickedVideoCodec {
+  container: 'avc' | 'vp9';
   codec: string;
-  hardwareAcceleration: HardwareAcceleration;
+  hardwareAcceleration?: HardwareAcceleration;
 }
 
-async function pickAvcConfig(
+/**
+ * Sonda fiel de un encoder: encoder temporal + canvas 64x64 + UN frame real
+ * + flush(). Detecta los casos en que `isConfigSupported`/`configure()`
+ * aceptan la config pero el codec muere al primer frame. Todo se cierra en
+ * el `finally`; cualquier fallo devuelve false.
+ */
+async function probeVideoEncoder(config: VideoEncoderConfig): Promise<boolean> {
+  let encoder: VideoEncoder | null = null;
+  let frame: VideoFrame | null = null;
+  try {
+    encoder = new VideoEncoder({ output: () => undefined, error: () => undefined });
+    encoder.configure(config);
+    if (encoder.state !== 'configured') return false;
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return false;
+    ctx.fillStyle = '#808080';
+    ctx.fillRect(0, 0, 64, 64);
+    frame = new VideoFrame(canvas, { timestamp: 0, duration: 33_333 });
+    encoder.encode(frame, { keyFrame: true });
+    await encoder.flush();
+    return encoder.state === 'configured';
+  } catch {
+    return false;
+  } finally {
+    if (frame) {
+      try {
+        frame.close();
+      } catch {
+        /* ya cerrado */
+      }
+    }
+    if (encoder && encoder.state !== 'closed') {
+      try {
+        encoder.close();
+      } catch {
+        /* ya cerrado */
+      }
+    }
+  }
+}
+
+/**
+ * Elige un codec de vídeo realmente operativo para MP4: H.264 si está
+ * disponible (Chrome/Edge), VP9 como respaldo (Firefox). Devuelve null si
+ * ningún candidato de ningún contenedor supera la sonda.
+ */
+async function pickVideoCodec(
   width: number,
   height: number,
   bitrate: number,
   framerate: number,
-): Promise<AvcConfig> {
+): Promise<PickedVideoCodec | null> {
   const safeBitrate = Math.max(100_000, Math.floor(bitrate) || 5_000_000);
+  const base = { width, height, bitrate: safeBitrate, framerate };
   for (const codec of AVC_CANDIDATES) {
     try {
-      const support = await VideoEncoder.isConfigSupported({
-        codec,
-        width,
-        height,
-        bitrate: safeBitrate,
-        framerate,
-      });
+      const support = await VideoEncoder.isConfigSupported({ ...base, codec });
       if (!support.supported) continue;
     } catch {
       continue; // este candidato ni se anuncia: probar el siguiente
     }
     for (const hardwareAcceleration of ACCEL_CANDIDATES) {
-      const probe = new VideoEncoder({ output: () => undefined, error: () => undefined });
-      let testFrame: VideoFrame | null = null;
-      try {
-        probe.configure({ codec, width, height, bitrate: safeBitrate, framerate, hardwareAcceleration });
-        if (probe.state !== 'configured') {
-          continue;
-        }
-        // Sonda fiel: codificar UN frame real y vaciar la cola. Detecta los
-        // casos que configure() acepta pero que mueren al primer frame.
-        const probeCanvas = document.createElement('canvas');
-        probeCanvas.width = 64;
-        probeCanvas.height = 64;
-        const probeCtx = probeCanvas.getContext('2d');
-        if (!probeCtx) {
-          continue;
-        }
-        probeCtx.fillStyle = '#808080';
-        probeCtx.fillRect(0, 0, 64, 64);
-        testFrame = new VideoFrame(probeCanvas, { timestamp: 0, duration: 33_333 });
-        probe.encode(testFrame, { keyFrame: true });
-        await probe.flush();
-        if (probe.state !== 'configured') {
-          continue;
-        }
-        return { codec, hardwareAcceleration };
-      } catch {
-        /* configure/encode/flush falló: probar siguiente candidato */
-      } finally {
-        if (testFrame) {
-          try {
-            testFrame.close();
-          } catch {
-            /* ya cerrado */
-          }
-        }
-        try {
-          probe.close();
-        } catch {
-          /* ya cerrado */
-        }
+      if (await probeVideoEncoder({ ...base, codec, hardwareAcceleration })) {
+        return { container: 'avc', codec, hardwareAcceleration };
       }
     }
   }
-  throw h264Error('Este navegador no pudo inicializar el codificador H.264 con este vídeo');
+  for (const codec of VP9_CANDIDATES) {
+    try {
+      const support = await VideoEncoder.isConfigSupported({ ...base, codec });
+      if (!support.supported) continue;
+    } catch {
+      continue;
+    }
+    for (const hardwareAcceleration of VP9_ACCEL_CANDIDATES) {
+      const config: VideoEncoderConfig = { ...base, codec };
+      if (hardwareAcceleration) config.hardwareAcceleration = hardwareAcceleration;
+      if (await probeVideoEncoder(config)) {
+        return { container: 'vp9', codec, hardwareAcceleration };
+      }
+    }
+  }
+  return null;
 }
 
-/** Decodifica el audio del vídeo a estéreo 44.1kHz; null si no hay audio. */
-async function decodeFileAudio(file: File): Promise<AudioBuffer | null> {
+/** Decodifica el audio del vídeo a estéreo (sampleRate configurable); null si no hay audio. */
+async function decodeFileAudio(file: File, sampleRate = 44100): Promise<AudioBuffer | null> {
   try {
     const raw = await file.arrayBuffer();
-    const ctx = new AudioContext({ sampleRate: 44100 });
+    const ctx = new AudioContext({ sampleRate });
     try {
       const decoded = await ctx.decodeAudioData(raw);
-      const offline = new OfflineAudioContext(2, Math.max(1, Math.floor(decoded.duration * 44100)), 44100);
+      const offline = new OfflineAudioContext(2, Math.max(1, Math.floor(decoded.duration * sampleRate)), sampleRate);
       const src = offline.createBufferSource();
       src.buffer = decoded;
       src.connect(offline.destination);
@@ -362,7 +398,7 @@ async function convertAudioOnly(
   return { blob: r.blob, mime: r.mime, name: withExt(file.name, '.m4a') };
 }
 
-/* ---------------- mp4 (H.264 + AAC) ---------------- */
+/* ---------------- mp4 (H.264/VP9 + AAC/Opus) ---------------- */
 
 async function convertToMp4(
   file: File,
@@ -390,44 +426,74 @@ async function convertToMp4(
     const safeBitrate = Math.max(100_000, Math.floor(opts.bitrate) || 5_000_000);
     onProgress?.(0.03);
 
-    // Audio en paralelo conceptual: se decodifica/codifica antes del bucle de vídeo.
-    let audioChunks: AacChunk[] = [];
-    const audioSampleRate = 44100;
+    // Audio antes del bucle de vídeo: AAC a 44.1 kHz (compatibilidad) con
+    // respaldo Opus a 48 kHz (Firefox). Si ninguno se puede codificar, se
+    // entrega solo vídeo (comportamiento actual).
     const audioChannels = 2;
+    const audioBitrate = 128_000;
+    let audioChunks: AacChunk[] = [];
+    let audioCodec: 'aac' | 'opus' = 'aac';
+    let audioSampleRate = 44100;
     if (opts.includeAudio) {
-      const audioBuffer = await decodeFileAudio(file);
-      if (audioBuffer && audioBuffer.length > 0) {
+      const aacBuffer = await decodeFileAudio(file, 44100);
+      if (aacBuffer && aacBuffer.length > 0) {
         try {
-          audioChunks = await encodeAudioBufferToAac(
-            audioBuffer,
-            { sampleRate: audioSampleRate, channels: audioChannels, bitrate: 128_000 },
+          const chunks = await encodeAudioBufferToAac(
+            aacBuffer,
+            { sampleRate: 44100, channels: audioChannels, bitrate: audioBitrate },
             (p) => onProgress?.(0.03 + p * 0.05),
           );
+          if (chunks.length > 0) audioChunks = chunks;
         } catch {
-          audioChunks = []; // sin audio: se entrega solo vídeo
+          /* sin AAC: se prueba Opus */
+        }
+      }
+      if (audioChunks.length === 0) {
+        const opusBuffer = await decodeFileAudio(file, 48000);
+        if (opusBuffer && opusBuffer.length > 0) {
+          try {
+            const { chunks } = await encodeAudioBuffer(
+              opusBuffer,
+              { codec: 'opus', sampleRate: 48000, channels: audioChannels, bitrate: audioBitrate },
+              (p) => onProgress?.(0.03 + p * 0.05),
+            );
+            if (chunks.length > 0) {
+              audioChunks = chunks;
+              audioCodec = 'opus';
+              audioSampleRate = 48000;
+            }
+          } catch {
+            audioChunks = []; // sin audio: se entrega solo vídeo
+          }
         }
       }
     }
     onProgress?.(0.08);
 
-    const target = new ArrayBufferTarget();
-    const muxer =
-      audioChunks.length > 0
-        ? new Muxer({
-            target,
-            video: { codec: 'avc', width: W, height: H, frameRate: fps },
-            audio: { codec: 'aac', sampleRate: audioSampleRate, numberOfChannels: audioChannels },
-            fastStart: 'in-memory',
-            firstTimestampBehavior: 'offset',
-          })
-        : new Muxer({
-            target,
-            video: { codec: 'avc', width: W, height: H, frameRate: fps },
-            fastStart: 'in-memory',
-            firstTimestampBehavior: 'offset',
-          });
+    const videoCodec = await pickVideoCodec(W, H, safeBitrate, fps);
+    if (!videoCodec) {
+      throw h264Error(
+        'No se pudo inicializar ningún codificador de vídeo (ni H.264 ni VP9) para MP4',
+      );
+    }
+    const videoCodecLabel = videoCodec.container === 'avc' ? 'H.264' : 'VP9';
 
-    const avc = await pickAvcConfig(W, H, safeBitrate, fps);
+    const target = new ArrayBufferTarget();
+    const muxerOptions: MuxerOptions<ArrayBufferTarget> = {
+      target,
+      video: { codec: videoCodec.container, width: W, height: H, frameRate: fps },
+      fastStart: 'in-memory',
+      firstTimestampBehavior: 'offset',
+    };
+    if (audioChunks.length > 0) {
+      muxerOptions.audio = {
+        codec: audioCodec,
+        sampleRate: audioSampleRate,
+        numberOfChannels: audioChannels,
+      };
+    }
+    const muxer = new Muxer(muxerOptions);
+
     const videoChunks: { chunk: EncodedVideoChunk; meta: EncodedVideoChunkMetadata | undefined }[] =
       [];
     // Causa REAL de muerte del codec (la guarda el callback `error`, que es
@@ -444,28 +510,28 @@ async function convertToMp4(
         error: (e) => {
           if (!encodeError) {
             const detail = e.message || 'Error del codificador de vídeo.';
-            encodeError = h264Error(`El codificador H.264 falló: ${detail}`);
+            encodeError = h264Error(`El codificador ${videoCodecLabel} falló: ${detail}`);
           }
         },
       });
     const configureEncoder = (enc: VideoEncoder): void => {
       try {
         enc.configure({
-          codec: avc.codec,
+          codec: videoCodec.codec,
           width: W,
           height: H,
           bitrate: safeBitrate,
           framerate: fps,
-          hardwareAcceleration: avc.hardwareAcceleration,
+          hardwareAcceleration: videoCodec.hardwareAcceleration,
         });
       } catch (e) {
         throw h264Error(
-          `No se pudo configurar el codificador H.264 (${avc.codec}): ` +
+          `No se pudo configurar el codificador ${videoCodecLabel} (${videoCodec.codec}): ` +
             `${e instanceof Error ? e.message : 'error desconocido'}`,
         );
       }
       if (enc.state !== 'configured') {
-        throw h264Error('El codificador H.264 no quedó configurado');
+        throw h264Error(`El codificador ${videoCodecLabel} no quedó configurado`);
       }
     };
     videoEncoder = makeEncoder();
@@ -582,7 +648,7 @@ async function convertToMp4(
                 continue;
               }
               throw h264Error(
-                `El codificador H.264 se detuvo al codificar el cuadro ${i + 1}/${totalFrames}`,
+                `El codificador ${videoCodecLabel} se detuvo al codificar el cuadro ${i + 1}/${totalFrames}`,
               );
             }
             throw h264Error(
@@ -605,7 +671,7 @@ async function convertToMp4(
       // recupera (una vez) y se avanza al siguiente sin re-codificar.
       try {
         const enc = videoEncoder;
-        if (enc) await waitForDrain(enc, getFatal);
+        if (enc) await waitForDrain(enc, getFatal, videoCodecLabel);
         else assertEncoderAlive();
       } catch (e) {
         if (!recovered.done && tryRecoverOnce()) {
@@ -626,10 +692,10 @@ async function convertToMp4(
       if (isInvalidStateError(e)) {
         await Promise.resolve();
         if (encodeError) throw encodeError;
-        throw h264Error('El codificador H.264 se detuvo al finalizar la codificación');
+        throw h264Error(`El codificador ${videoCodecLabel} se detuvo al finalizar la codificación`);
       }
       throw h264Error(
-        `Fallo al finalizar la codificación H.264: ${e instanceof Error ? e.message : 'error desconocido'}`,
+        `Fallo al finalizar la codificación ${videoCodecLabel}: ${e instanceof Error ? e.message : 'error desconocido'}`,
       );
     }
     assertEncoderAlive();

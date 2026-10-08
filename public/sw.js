@@ -1,4 +1,4 @@
-const CACHE = 'hydra-convert-v2';
+const CACHE = 'hydra-convert-v3';
 const ASSETS = ['/', '/index.html', '/manifest.webmanifest'];
 
 self.addEventListener('install', (event) => {

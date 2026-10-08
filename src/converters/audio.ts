@@ -1,11 +1,13 @@
 /**
  * Conversor de audio 100% local, sin dependencias salvo `mp4-muxer`
- * (solo para la rama mp4/AAC) y APIs web estándar.
+ * (solo para la rama mp4/AAC/Opus) y APIs web estándar.
  *
  * - wav:  AudioContext.decodeAudioData -> OfflineAudioContext
  *         (resample/downmix) -> PCM16 manual (audioBufferToWavBlob).
- * - mp4:  igual que wav + AudioEncoder (mp4a.40.2) + Muxer mp4-muxer.
- *         Salida `audio/mp4` con extensión `.m4a`.
+ * - mp4:  igual que wav + AudioEncoder + Muxer mp4-muxer. AAC (mp4a.40.2)
+ *         a 44.1 kHz con extensión `.m4a`; si no hay AAC operativo
+ *         (p. ej. Firefox), respaldo Opus a 48 kHz en MP4 con extensión
+ *         `.mp4`. Salida `audio/mp4` en ambos casos.
  * - webm: igual que wav (resample en memoria) + MediaRecorder
  *         (`audio/webm;codecs=opus`) con regrabado en tiempo real.
  */
@@ -29,6 +31,23 @@ export interface ConvertAudioResult {
 export interface AacChunk {
   chunk: EncodedAudioChunk;
   meta: EncodedAudioChunkMetadata | undefined;
+}
+
+/** Codecs de audio que mp4-muxer sabe muxar en MP4. */
+export type AudioCodecName = 'aac' | 'opus';
+
+/** Parámetros de codificación de encodeAudioBuffer. */
+export interface EncodeAudioOptions {
+  codec: AudioCodecName;
+  sampleRate: number;
+  channels: number;
+  bitrate: number;
+}
+
+/** Resultado de encodeAudioBuffer: chunks listos para muxar + codec usado. */
+export interface EncodedAudio {
+  chunks: AacChunk[];
+  codec: AudioCodecName;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -92,24 +111,38 @@ function snapAacSampleRate(requested: number): number {
   return best;
 }
 
+const AUDIO_CODEC_LABELS: Record<AudioCodecName, string> = {
+  aac: 'AAC (mp4a.40.2)',
+  opus: 'Opus',
+};
+
+const AUDIO_CODEC_IDS: Record<AudioCodecName, string> = {
+  aac: 'mp4a.40.2',
+  opus: 'opus',
+};
+
 /**
- * Codifica un AudioBuffer (ya remuestreado) a chunks AAC (mp4a.40.2)
- * con AudioEncoder. Los datos se entregan en planar float32
- * (`f32-planar`), en bloques de 2048 frames por canal, con timestamps
- * en microsegundos y duración explícita por chunk.
+ * Codifica un AudioBuffer (ya remuestreado) a chunks con AudioEncoder para
+ * el codec pedido ('aac' | 'opus'). Los datos se entregan en planar float32
+ * (`f32-planar`), en bloques de 2048 frames por canal, con timestamps en
+ * microsegundos y duración explícita por chunk. Devuelve los chunks y el
+ * codec realmente usado.
  */
-export async function encodeAudioBufferToAac(
+export async function encodeAudioBuffer(
   buffer: AudioBuffer,
-  opts: { sampleRate: number; channels: number; bitrate: number },
+  opts: EncodeAudioOptions,
   onProgress?: (p: number) => void,
-): Promise<AacChunk[]> {
+): Promise<EncodedAudio> {
+  const label = AUDIO_CODEC_LABELS[opts.codec];
   if (typeof AudioEncoder === 'undefined') {
-    throw new Error('Este navegador no soporta AudioEncoder (WebCodecs): no se puede codificar AAC.');
+    throw new Error(
+      `Este navegador no soporta AudioEncoder (WebCodecs): no se puede codificar ${label}.`,
+    );
   }
   const channels = Math.min(2, Math.max(1, Math.round(opts.channels)));
   const sampleRate = opts.sampleRate;
   const config: AudioEncoderConfig = {
-    codec: 'mp4a.40.2',
+    codec: AUDIO_CODEC_IDS[opts.codec],
     sampleRate,
     numberOfChannels: channels,
     bitrate: opts.bitrate,
@@ -122,7 +155,7 @@ export async function encodeAudioBufferToAac(
   }
   if (!supported) {
     throw new Error(
-      'El codificador AAC (mp4a.40.2) no es compatible con este navegador para esta configuración.',
+      `El codificador ${label} no es compatible con este navegador para esta configuración.`,
     );
   }
 
@@ -133,7 +166,7 @@ export async function encodeAudioBufferToAac(
       out.push({ chunk, meta });
     },
     error: (e) => {
-      encodeError = new Error(e.message || 'Error del codificador AAC.');
+      encodeError = new Error(e.message || `Error del codificador ${label}.`);
     },
   });
   try {
@@ -169,7 +202,7 @@ export async function encodeAudioBufferToAac(
     }
     await encoder.flush();
     if (encodeError) throw encodeError;
-    return out;
+    return { chunks: out, codec: opts.codec };
   } finally {
     if (encoder.state !== 'closed') {
       try {
@@ -179,6 +212,19 @@ export async function encodeAudioBufferToAac(
       }
     }
   }
+}
+
+/**
+ * Compatibilidad: codifica un AudioBuffer a chunks AAC (mp4a.40.2).
+ * Envoltorio de encodeAudioBuffer con codec 'aac'; firma y retorno intactos.
+ */
+export async function encodeAudioBufferToAac(
+  buffer: AudioBuffer,
+  opts: { sampleRate: number; channels: number; bitrate: number },
+  onProgress?: (p: number) => void,
+): Promise<AacChunk[]> {
+  const { chunks } = await encodeAudioBuffer(buffer, { codec: 'aac', ...opts }, onProgress);
+  return chunks;
 }
 
 function pickWebmAudioMime(): string | undefined {
@@ -191,6 +237,45 @@ function pickWebmAudioMime(): string | undefined {
     }
   }
   return undefined;
+}
+
+/**
+ * Decodifica/remuestrea el archivo al sampleRate pedido, lo codifica con el
+ * codec indicado y muxa los chunks en un MP4 (`audio/mp4`). Lanza si el
+ * codec no está disponible o falla.
+ */
+async function encodeMp4Audio(
+  file: File,
+  codec: AudioCodecName,
+  sampleRate: number,
+  channels: 1 | 2,
+  bitrate: number,
+  onProgress?: (p: number) => void,
+): Promise<Blob> {
+  const rendered = await decodeAndResample(
+    file,
+    sampleRate,
+    channels,
+    (p) => onProgress?.(0.05 + p * 0.25),
+  );
+  if (rendered.length === 0) throw new Error('El audio decodificado está vacío.');
+  const { chunks } = await encodeAudioBuffer(
+    rendered,
+    { codec, sampleRate, channels, bitrate },
+    (p) => onProgress?.(0.3 + p * 0.6),
+  );
+  onProgress?.(0.95);
+  const target = new ArrayBufferTarget();
+  const muxer = new Muxer({
+    target,
+    audio: { codec, sampleRate, numberOfChannels: channels },
+    fastStart: 'in-memory',
+    firstTimestampBehavior: 'offset',
+  });
+  for (const { chunk, meta } of chunks) muxer.addAudioChunk(chunk, meta);
+  muxer.finalize();
+  onProgress?.(1);
+  return new Blob([target.buffer], { type: 'audio/mp4' });
 }
 
 export async function convertAudio(
@@ -216,35 +301,32 @@ export async function convertAudio(
   }
 
   if (opts.format === 'mp4') {
-    const sampleRate = snapAacSampleRate(opts.sampleRate);
-    const rendered = await decodeAndResample(
-      file,
-      sampleRate,
-      opts.channels,
-      (p) => onProgress?.(0.05 + p * 0.25),
-    );
-    if (rendered.length === 0) throw new Error('El audio decodificado está vacío.');
-    const chunks = await encodeAudioBufferToAac(
-      rendered,
-      { sampleRate, channels: opts.channels, bitrate: opts.bitrate },
-      (p) => onProgress?.(0.3 + p * 0.6),
-    );
-    onProgress?.(0.95);
-    const target = new ArrayBufferTarget();
-    const muxer = new Muxer({
-      target,
-      audio: { codec: 'aac', sampleRate, numberOfChannels: opts.channels },
-      fastStart: 'in-memory',
-      firstTimestampBehavior: 'offset',
-    });
-    for (const { chunk, meta } of chunks) muxer.addAudioChunk(chunk, meta);
-    muxer.finalize();
-    onProgress?.(1);
-    return {
-      blob: new Blob([target.buffer], { type: 'audio/mp4' }),
-      mime: 'audio/mp4',
-      name: `${base}.m4a`,
-    };
+    // AAC primero (compatibilidad máxima, extensión `.m4a`).
+    let aacDetail = '';
+    try {
+      const blob = await encodeMp4Audio(
+        file,
+        'aac',
+        snapAacSampleRate(opts.sampleRate),
+        opts.channels,
+        opts.bitrate,
+        onProgress,
+      );
+      return { blob, mime: 'audio/mp4', name: `${base}.m4a` };
+    } catch (e) {
+      aacDetail = e instanceof Error ? e.message : String(e);
+    }
+    // Respaldo: Opus a 48 kHz (óptimo) dentro de MP4 (p. ej. Firefox).
+    try {
+      const blob = await encodeMp4Audio(file, 'opus', 48000, opts.channels, opts.bitrate, onProgress);
+      return { blob, mime: 'audio/mp4', name: `${base}.mp4` };
+    } catch (e) {
+      const opusDetail = e instanceof Error ? e.message : String(e);
+      throw new Error(
+        `AUDIO_NO_DISPONIBLE: no se pudo codificar el audio para MP4. ` +
+          `AAC: ${aacDetail} Opus: ${opusDetail}`,
+      );
+    }
   }
 
   // webm: regrabado en tiempo real del buffer ya remuestreado.
