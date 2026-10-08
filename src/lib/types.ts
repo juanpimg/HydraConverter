@@ -15,6 +15,7 @@ export interface ConvertJob {
   outputName?: string;
   outputMime?: string;
   durationMs?: number;
+  errorCode?: 'H264_UNAVAILABLE' | undefined;
 }
 
 export interface OutputOptions {

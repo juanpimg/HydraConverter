@@ -21,6 +21,7 @@ import type { ConvertJob, FileKind, JobStatus } from '../lib/types';
 
 interface QueueProps {
   onConvert: (id: string) => void;
+  onRetryAsWebm: (id: string) => void;
   onCancel: (id: string) => void;
   onRemove: (id: string) => void;
   onDownload: (id: string) => void;
@@ -51,12 +52,14 @@ function iconButtonClass(disabled = false): string {
 function JobRow({
   job,
   onConvert,
+  onRetryAsWebm,
   onCancel,
   onRemove,
   onDownload,
 }: {
   job: ConvertJob;
   onConvert: (id: string) => void;
+  onRetryAsWebm: (id: string) => void;
   onCancel: (id: string) => void;
   onRemove: (id: string) => void;
   onDownload: (id: string) => void;
@@ -151,6 +154,18 @@ function JobRow({
             {job.status === 'error' ? 'Reintentar' : 'Convertir'}
           </button>
         )}
+        {job.status === 'error' && job.errorCode === 'H264_UNAVAILABLE' && (
+          <button
+            type="button"
+            data-action="retry-webm"
+            title="Probar como WebM"
+            aria-label={`Probar como WebM ${job.fileName}`}
+            onClick={() => onRetryAsWebm(job.id)}
+            className="flex items-center gap-1 rounded-lg border border-zinc-700 px-2.5 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800"
+          >
+            Probar como WebM
+          </button>
+        )}
         {job.status === 'done' && job.outputBlob && (
           <button
             type="button"
@@ -179,7 +194,7 @@ function JobRow({
   );
 }
 
-export default function Queue({ onConvert, onCancel, onRemove, onDownload }: QueueProps) {
+export default function Queue({ onConvert, onRetryAsWebm, onCancel, onRemove, onDownload }: QueueProps) {
   const jobs = useConvertStore((s) => s.jobs);
 
   return (
@@ -212,6 +227,7 @@ export default function Queue({ onConvert, onCancel, onRemove, onDownload }: Que
               key={job.id}
               job={job}
               onConvert={onConvert}
+              onRetryAsWebm={onRetryAsWebm}
               onCancel={onCancel}
               onRemove={onRemove}
               onDownload={onDownload}

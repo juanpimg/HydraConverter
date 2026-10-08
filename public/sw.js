@@ -1,4 +1,4 @@
-const CACHE = 'hydra-convert-v1';
+const CACHE = 'hydra-convert-v2';
 const ASSETS = ['/', '/index.html', '/manifest.webmanifest'];
 
 self.addEventListener('install', (event) => {
@@ -21,8 +21,36 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+function isNavigationRequest(request) {
+  if (request.mode === 'navigate') return true;
+  try {
+    const url = new URL(request.url);
+    return url.pathname === '/' || url.pathname.endsWith('/index.html');
+  } catch {
+    return false;
+  }
+}
+
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
+  // Navegaciones (`/` e `/index.html`): network-first con fallback a caché offline.
+  if (isNavigationRequest(event.request)) {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          const copy = response.clone();
+          caches.open(CACHE).then((cache) => cache.put(event.request, copy));
+          return response;
+        })
+        .catch(() =>
+          caches
+            .match(event.request)
+            .then((cached) => cached || caches.match('/index.html')),
+        ),
+    );
+    return;
+  }
+  // Estáticos (`/assets/*`, manifest y resto de GET): cache-first.
   event.respondWith(
     caches.match(event.request).then((cached) => {
       if (cached) return cached;

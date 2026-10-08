@@ -136,28 +136,65 @@ function targetSize(w: number, h: number, resolution: string): { width: number; 
   return { width: even(w * scale), height: even(targetH) };
 }
 
-/** Espera a que la cola del encoder baje a <=3 (backpressure vía evento dequeue). */
-function waitForDrain(encoder: VideoEncoder): Promise<void> {
-  if (encoder.encodeQueueSize <= 3) return Promise.resolve();
-  return new Promise((resolve) => {
-    const check = (): void => {
-      if (encoder.encodeQueueSize <= 3) {
-        encoder.removeEventListener('dequeue', check);
-        resolve();
+/** Prefijo contractual: todo error fatal del H.264 lo lleva (la UI depende de él). */
+const H264_PREFIX = 'H264_NO_DISPONIBLE: ';
+
+/** Construye un error fatal del H.264 con el prefijo contractual + sugerencia. */
+function h264Error(detail: string): Error {
+  const clean = detail.trim().replace(/\.*\s*$/, '');
+  return new Error(`${H264_PREFIX}${clean}. Prueba con formato WebM o con una resolución menor.`);
+}
+
+/** Detecta el InvalidStateError críptico ("Encoder must be configured first"). */
+function isInvalidStateError(e: unknown): boolean {
+  if (e instanceof DOMException) return e.name === 'InvalidStateError';
+  if (e instanceof Error) {
+    if (e.name === 'InvalidStateError') return true;
+    return /must be configured first|not configured/i.test(e.message);
+  }
+  return false;
+}
+
+/**
+ * Espera a que la cola del encoder baje a <=3 (backpressure por sondeo).
+ * Si el encoder muere esperando, lanza la causa real guardada (nunca se
+ * queda colgado esperando un `dequeue` que ya no llegará).
+ */
+async function waitForDrain(encoder: VideoEncoder, getFatal: () => Error | null): Promise<void> {
+  for (;;) {
+    try {
+      const fatal = getFatal();
+      if (fatal) throw fatal;
+      if (encoder.state !== 'configured') {
+        throw getFatal() ?? h264Error('El codificador H.264 se detuvo de forma inesperada');
       }
-    };
-    encoder.addEventListener('dequeue', check);
-    check();
-  });
+      if (encoder.encodeQueueSize <= 3) return;
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith(H264_PREFIX)) throw e;
+      const fatal = (() => {
+        try {
+          return getFatal();
+        } catch {
+          return null;
+        }
+      })();
+      if (fatal) throw fatal;
+      if (isInvalidStateError(e)) {
+        throw h264Error('El codificador H.264 se detuvo de forma inesperada');
+      }
+      throw e;
+    }
+    await sleep(20);
+  }
 }
 
 /**
  * Candidatos H.264 ordenados de mayor a menor nivel: L5.2 cubre 4K60,
  * L4.0 cubre 1080p30; Baseline como último recurso (máxima compatibilidad).
- * `isConfigSupported` puede devolver `true` y aun así fallar la
- * inicialización real (p. ej. sin codificador H.264 disponible), por eso
- * cada candidato se valida con un `configure()` real sobre un encoder
- * temporal antes de usarlo en la conversión.
+ * `isConfigSupported` y un `configure()` aislado pueden dar falso positivo
+ * (aceptan la config pero el codec muere al primer frame), por eso cada
+ * candidato se valida con configure() + UN frame real de prueba (canvas
+ * 64x64) + flush() sobre un encoder temporal antes de darlo por bueno.
  */
 const AVC_CANDIDATES = ['avc1.640034', 'avc1.640028', 'avc1.42001f', 'avc1.42001e'];
 const ACCEL_CANDIDATES: HardwareAcceleration[] = ['prefer-hardware', 'prefer-software'];
@@ -189,14 +226,40 @@ async function pickAvcConfig(
     }
     for (const hardwareAcceleration of ACCEL_CANDIDATES) {
       const probe = new VideoEncoder({ output: () => undefined, error: () => undefined });
+      let testFrame: VideoFrame | null = null;
       try {
         probe.configure({ codec, width, height, bitrate: safeBitrate, framerate, hardwareAcceleration });
-        if (probe.state === 'configured') {
-          return { codec, hardwareAcceleration };
+        if (probe.state !== 'configured') {
+          continue;
         }
+        // Sonda fiel: codificar UN frame real y vaciar la cola. Detecta los
+        // casos que configure() acepta pero que mueren al primer frame.
+        const probeCanvas = document.createElement('canvas');
+        probeCanvas.width = 64;
+        probeCanvas.height = 64;
+        const probeCtx = probeCanvas.getContext('2d');
+        if (!probeCtx) {
+          continue;
+        }
+        probeCtx.fillStyle = '#808080';
+        probeCtx.fillRect(0, 0, 64, 64);
+        testFrame = new VideoFrame(probeCanvas, { timestamp: 0, duration: 33_333 });
+        probe.encode(testFrame, { keyFrame: true });
+        await probe.flush();
+        if (probe.state !== 'configured') {
+          continue;
+        }
+        return { codec, hardwareAcceleration };
       } catch {
-        /* configure() lanzó de forma síncrona: probar siguiente */
+        /* configure/encode/flush falló: probar siguiente candidato */
       } finally {
+        if (testFrame) {
+          try {
+            testFrame.close();
+          } catch {
+            /* ya cerrado */
+          }
+        }
         try {
           probe.close();
         } catch {
@@ -205,10 +268,7 @@ async function pickAvcConfig(
       }
     }
   }
-  throw new Error(
-    'Este navegador no pudo inicializar el codificador H.264 con este vídeo ' +
-      '(prueba con formato WebM o con una resolución menor).',
-  );
+  throw h264Error('Este navegador no pudo inicializar el codificador H.264 con este vídeo');
 }
 
 /** Decodifica el audio del vídeo a estéreo 44.1kHz; null si no hay audio. */
@@ -370,49 +430,103 @@ async function convertToMp4(
     const avc = await pickAvcConfig(W, H, safeBitrate, fps);
     const videoChunks: { chunk: EncodedVideoChunk; meta: EncodedVideoChunkMetadata | undefined }[] =
       [];
+    // Causa REAL de muerte del codec (la guarda el callback `error`, que es
+    // asíncrono). Todo acceso al encoder es serial: este bucle nunca tiene
+    // dos encode()/flush() en vuelo, y cada encode() traduce el
+    // InvalidStateError críptico a esta causa antes de relanzar.
     let encodeError: Error | null = null;
-    videoEncoder = new VideoEncoder({
-      output: (chunk, meta) => {
-        videoChunks.push({ chunk, meta });
-      },
-      error: (e) => {
-        if (!encodeError) {
-          encodeError = new Error(
-            (e.message || 'Error del codificador de vídeo.') +
-              ' Prueba con formato WebM o con una resolución menor.',
-          );
-        }
-      },
-    });
-    try {
-      videoEncoder.configure({
-        codec: avc.codec,
-        width: W,
-        height: H,
-        bitrate: safeBitrate,
-        framerate: fps,
-        hardwareAcceleration: avc.hardwareAcceleration,
+    const getFatal = (): Error | null => encodeError;
+    const makeEncoder = (): VideoEncoder =>
+      new VideoEncoder({
+        output: (chunk, meta) => {
+          videoChunks.push({ chunk, meta });
+        },
+        error: (e) => {
+          if (!encodeError) {
+            const detail = e.message || 'Error del codificador de vídeo.';
+            encodeError = h264Error(`El codificador H.264 falló: ${detail}`);
+          }
+        },
       });
+    const configureEncoder = (enc: VideoEncoder): void => {
+      try {
+        enc.configure({
+          codec: avc.codec,
+          width: W,
+          height: H,
+          bitrate: safeBitrate,
+          framerate: fps,
+          hardwareAcceleration: avc.hardwareAcceleration,
+        });
+      } catch (e) {
+        throw h264Error(
+          `No se pudo configurar el codificador H.264 (${avc.codec}): ` +
+            `${e instanceof Error ? e.message : 'error desconocido'}`,
+        );
+      }
+      if (enc.state !== 'configured') {
+        throw h264Error('El codificador H.264 no quedó configurado');
+      }
+    };
+    videoEncoder = makeEncoder();
+    try {
+      configureEncoder(videoEncoder);
     } catch (e) {
-      throw new Error(
-        `No se pudo configurar el codificador H.264 (${avc.codec}): ` +
-          `${e instanceof Error ? e.message : 'error desconocido'}. ` +
-          'Prueba con formato WebM o con una resolución menor.',
-      );
-    }
-    if (videoEncoder.state !== 'configured') {
-      throw new Error(
-        'El codificador H.264 no quedó configurado. Prueba con formato WebM o con una resolución menor.',
-      );
+      try {
+        videoEncoder.close();
+      } catch {
+        /* ya cerrado */
+      }
+      videoEncoder = null;
+      throw e;
     }
     /** Lanza la causa REAL si el encoder murió de forma asíncrona. */
     const assertEncoderAlive = (): void => {
       if (encodeError) throw encodeError;
       if (!videoEncoder || videoEncoder.state !== 'configured') {
-        throw new Error(
-          'El codificador de vídeo se detuvo de forma inesperada. ' +
-            'Prueba con formato WebM o con una resolución menor.',
-        );
+        throw h264Error('El codificador de vídeo se detuvo de forma inesperada');
+      }
+    };
+    /**
+     * UNA única recuperación por conversión: cierra el encoder muerto y crea
+     * uno nuevo ya configurado. Los chunks ya emitidos se conservan y los
+     * timestamps son absolutos, así que el muxado sigue válido. Devuelve
+     * false si la reconfiguración no tuvo éxito (el llamante lanza entonces
+     * un error claro con el prefijo contractual).
+     */
+    const tryRecoverOnce = (): boolean => {
+      if (!videoEncoder) return false;
+      try {
+        videoEncoder.close();
+      } catch {
+        /* ya cerrado */
+      }
+      encodeError = null;
+      const next = makeEncoder();
+      try {
+        configureEncoder(next);
+      } catch {
+        try {
+          next.close();
+        } catch {
+          /* ya cerrado */
+        }
+        return false;
+      }
+      videoEncoder = next;
+      return true;
+    };
+    /** Comprueba vida del encoder; si murió e Intenta la única recuperación. */
+    const assertAliveOrRecover = (recovered: { done: boolean }): void => {
+      try {
+        assertEncoderAlive();
+      } catch (e) {
+        if (!recovered.done && tryRecoverOnce()) {
+          recovered.done = true;
+          assertEncoderAlive();
+          return;
+        }
+        throw e;
       }
     };
 
@@ -422,35 +536,102 @@ async function convertToMp4(
     const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) throw new Error('Canvas 2D no disponible en este navegador.');
 
+    const recovered = { done: false };
     for (let i = 0; i < totalFrames; i++) {
-      assertEncoderAlive();
+      assertAliveOrRecover(recovered);
       const t = Math.min(i / fps, Math.max(0, duration - 0.05));
       await seekVideo(video, t);
       // El encoder puede morir durante el seek (callback de error asíncrono):
       // comprobar ANTES de encode() para no ver el críptico
       // "VideoEncoder.encode: Encoder must be configured first".
-      assertEncoderAlive();
+      assertAliveOrRecover(recovered);
       ctx.drawImage(video, 0, 0, W, H);
       const timestamp = Math.round((i * 1_000_000) / fps);
-      const frame = new VideoFrame(canvas, { timestamp, duration: frameDurationUs });
-      try {
+      // Reintento del MISMO cuadro i solo si hubo recuperación con éxito;
+      // el frame se recrea en cada vuelta y siempre se cierra (try/finally).
+      for (;;) {
+        let frame: VideoFrame | null = null;
         try {
-          videoEncoder.encode(frame, { keyFrame: i % 60 === 0 });
-        } catch (e) {
-          if (encodeError) throw encodeError;
-          throw new Error(
-            `Fallo al codificar el cuadro ${i + 1}/${totalFrames}: ` +
-              `${e instanceof Error ? e.message : 'error desconocido'}. ` +
-              'Prueba con formato WebM o con una resolución menor.',
-          );
+          frame = new VideoFrame(canvas, { timestamp, duration: frameDurationUs });
+          try {
+            const enc = videoEncoder;
+            if (!enc) throw h264Error('El codificador de vídeo se detuvo de forma inesperada');
+            enc.encode(frame, { keyFrame: i % 60 === 0 });
+          } catch (e) {
+            if (encodeError) {
+              if (!recovered.done && tryRecoverOnce()) {
+                recovered.done = true;
+                continue; // reanudar desde el cuadro i con el encoder nuevo
+              }
+              throw encodeError; // causa real, con prefijo; nunca el mensaje críptico
+            }
+            if (isInvalidStateError(e)) {
+              // Carrera: el codec murió pero el callback `error` aún no
+              // registró la causa. Se cede un turno y jamás se expone el
+              // mensaje críptico al usuario.
+              await Promise.resolve();
+              if (encodeError) {
+                if (!recovered.done && tryRecoverOnce()) {
+                  recovered.done = true;
+                  continue;
+                }
+                throw encodeError;
+              }
+              if (!recovered.done && tryRecoverOnce()) {
+                recovered.done = true;
+                continue;
+              }
+              throw h264Error(
+                `El codificador H.264 se detuvo al codificar el cuadro ${i + 1}/${totalFrames}`,
+              );
+            }
+            throw h264Error(
+              `Fallo al codificar el cuadro ${i + 1}/${totalFrames}: ` +
+                `${e instanceof Error ? e.message : 'error desconocido'}`,
+            );
+          }
+          break;
+        } finally {
+          if (frame) {
+            try {
+              frame.close();
+            } catch {
+              /* ya cerrado */
+            }
+          }
         }
-      } finally {
-        frame.close();
       }
-      await waitForDrain(videoEncoder);
+      // Si muere durante el drenaje, el cuadro i ya quedó encolado: se
+      // recupera (una vez) y se avanza al siguiente sin re-codificar.
+      try {
+        const enc = videoEncoder;
+        if (enc) await waitForDrain(enc, getFatal);
+        else assertEncoderAlive();
+      } catch (e) {
+        if (!recovered.done && tryRecoverOnce()) {
+          recovered.done = true;
+        } else {
+          throw e;
+        }
+      }
       onProgress?.(0.08 + (0.82 * (i + 1)) / totalFrames);
     }
-    await videoEncoder.flush();
+    try {
+      const enc = videoEncoder;
+      if (!enc) throw h264Error('El codificador de vídeo se detuvo de forma inesperada');
+      await enc.flush();
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith(H264_PREFIX)) throw e;
+      if (encodeError) throw encodeError;
+      if (isInvalidStateError(e)) {
+        await Promise.resolve();
+        if (encodeError) throw encodeError;
+        throw h264Error('El codificador H.264 se detuvo al finalizar la codificación');
+      }
+      throw h264Error(
+        `Fallo al finalizar la codificación H.264: ${e instanceof Error ? e.message : 'error desconocido'}`,
+      );
+    }
     assertEncoderAlive();
 
     for (const { chunk, meta } of videoChunks) muxer.addVideoChunk(chunk, meta);

@@ -48,7 +48,7 @@ export default function App() {
     cancelledRef.current.delete(id);
     runningRef.current.add(id);
     const started = performance.now();
-    state.updateJob(id, { status: 'converting', progress: 0, message: 'Convirtiendo…' });
+    state.updateJob(id, { status: 'converting', progress: 0, message: 'Convirtiendo…', errorCode: undefined });
     try {
       const opts = useConvertStore.getState().options;
       const onProgress = (p: number): void => {
@@ -108,6 +108,7 @@ export default function App() {
         status: 'done',
         progress: 1,
         message: 'Listo',
+        errorCode: undefined,
         outputBlob: result.blob,
         outputName: result.name,
         outputMime: result.mime,
@@ -121,10 +122,22 @@ export default function App() {
         store.updateJob(id, { status: 'queued', progress: 0, message: 'Cancelado' });
         return;
       }
-      store.updateJob(id, {
-        status: 'error',
-        message: err instanceof Error ? err.message : 'Error desconocido.',
-      });
+      const rawMessage = err instanceof Error ? err.message : 'Error desconocido.';
+      const H264_PREFIX = 'H264_NO_DISPONIBLE: ';
+      if (rawMessage.startsWith(H264_PREFIX)) {
+        const clean = rawMessage.slice(H264_PREFIX.length).trim() || 'H.264 no disponible.';
+        store.updateJob(id, {
+          status: 'error',
+          errorCode: 'H264_UNAVAILABLE',
+          message: `${clean} Prueba como WebM.`,
+        });
+      } else {
+        store.updateJob(id, {
+          status: 'error',
+          errorCode: undefined,
+          message: rawMessage,
+        });
+      }
     } finally {
       runningRef.current.delete(id);
     }
@@ -154,6 +167,14 @@ export default function App() {
       setRunningAll(false);
     }
   }, [runJob]);
+
+  const retryAsWebm = useCallback(
+    (id: string) => {
+      useConvertStore.getState().setOptions({ videoFormat: 'webm' });
+      void runJob(id);
+    },
+    [runJob],
+  );
 
   const handleCancel = useCallback((id: string) => {
     const job = useConvertStore.getState().jobs.find((j) => j.id === id);
@@ -228,6 +249,7 @@ export default function App() {
           <div className="min-w-0">
             <Queue
               onConvert={(id) => void runJob(id)}
+              onRetryAsWebm={(id) => retryAsWebm(id)}
               onCancel={handleCancel}
               onRemove={handleRemove}
               onDownload={handleDownload}
