@@ -11,9 +11,9 @@ WebCodecs, Canvas 2D y WebAudio. Sin backend, sin subidas, sin descargas en runt
 1. Arrastra archivos (o haz clic en la zona de subida). Se aceptan varios a la vez.
 2. Ajusta las opciones de salida (panel contextual por tipo: imagen, audio o vídeo).
 3. Pulsa **Convertir** en un archivo o **Convertir todo** para la cola completa.
-4. Descarga cada resultado con su botón **Descargar**.
+4. Descarga individualmente con **Descargar** o en lote con **Descargar lote (.zip)**.
 
-Puedes cancelar una conversión en curso, reintentar errores y vaciar la cola.
+Puedes cancelar una conversión en curso en cualquier momento (cancelación cooperativa inmediata con `AbortSignal`), reintentar errores y vaciar la cola.
 Los archivos nunca salen de tu dispositivo.
 
 ## Formatos
@@ -65,7 +65,9 @@ npm run dev --workspace=apps/hydra-convert
 # Tipos + build
 npm run build --workspace=apps/hydra-convert
 
-# Suites E2E (requieren Google Chrome en /usr/bin/google-chrome-stable y Firefox en /usr/bin/firefox)
+# Suites de prueba
+npm run test:convert:unit      # Vitest: utilidades ZIP, formatBytes, detect
+npm run test:convert:cancel-zip# E2E: Cancelación cooperativa <50ms y descarga ZIP
 npm run test:convert           # Chrome smoke: imagen + audio + móvil 390px, 0 console errors
 npm run test:convert:video     # Chrome matriz de vídeo: 7 casos (1080p30/60, vertical, impar, mov, sin audio, 480p/24)
 npm run test:convert:firefox   # Firefox real: 6 casos (mp4, webm, wav, m4a, webp)

@@ -32,12 +32,15 @@
    `probeVideoEncoder()` (configure + frame real + flush) y **fallback VP9+Opus en MP4** porque
    Firefox no puede codificar H.264/AAC (verificado con sonda en Firefox 157 real).
 4. **Recuperación única del encoder** si muere a mitad de bucle (close + reconfigure + reanudar).
-5. **ZIP por lote: no implementado** (descarga individual; deuda).
-6. **MP3 de salida → `.m4a`** (AAC/Opus): no existe encoder MP3 web; documentado en UI/README.
+5. **ZIP por lote nativo:** implementado en `src/utils/zip.ts` con método Store + CRC32 (100% cliente, 0 dependencias).
+6. **Cancelación cooperativa inmediata:** implementado con `AbortSignal` en todos los conversores (<50ms).
+7. **MP3 de salida → `.m4a`** (AAC/Opus): no existe encoder MP3 web; documentado en UI/README.
 
 ## Criterio DONE — verificado
 
 - [x] `npm run build --workspace=apps/hydra-convert` verde
+- [x] `npm run test:convert:unit` (8 tests vitest: zip, formatBytes, detectKindByMime) verde
+- [x] `npm run test:convert:cancel-zip` (cancelación cooperativa <50ms + descarga ZIP) verde
 - [x] `npm run test:convert` (Chrome smoke) verde, 0 console errors
 - [x] `npm run test:convert:video` 7/7 vídeos reales `done`
 - [x] `npm run test:convert:firefox` 6/6 en Firefox real, 0 console errors

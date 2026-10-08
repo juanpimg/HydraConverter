@@ -91,10 +91,13 @@ export async function convertImage(
   file: File,
   opts: ConvertImageOptions,
   onProgress?: (p: number) => void,
+  signal?: AbortSignal,
 ): Promise<ConvertImageResult> {
+  if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
   onProgress?.(0.05);
   const decoded = await decodeImage(file);
   try {
+    if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
     if (decoded.width <= 0 || decoded.height <= 0) {
       throw new Error('No se pudieron leer las dimensiones de la imagen.');
     }
@@ -120,6 +123,8 @@ export async function convertImage(
     ctx.drawImage(decoded.source, 0, 0, width, height);
     onProgress?.(0.7);
 
+    if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
+
     const mime = MIME_BY_FORMAT[opts.format];
     const quality = clampQuality(opts.quality);
     let blob: Blob;
@@ -130,6 +135,7 @@ export async function convertImage(
       if (opts.format !== 'webp') throw err;
       blob = await canvasToBlob(canvas, 'image/png', quality);
     }
+    if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
     onProgress?.(1);
     return {
       blob,

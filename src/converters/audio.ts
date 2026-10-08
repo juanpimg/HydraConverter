@@ -70,8 +70,11 @@ async function decodeAndResample(
   sampleRate: number,
   channels: 1 | 2,
   onProgress?: (p: number) => void,
+  signal?: AbortSignal,
 ): Promise<AudioBuffer> {
+  if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
   const raw = await file.arrayBuffer();
+  if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
   const ctx = new AudioContext({ sampleRate });
   try {
     let decoded: AudioBuffer;
@@ -81,6 +84,7 @@ async function decodeAndResample(
     } catch {
       throw new Error('No se pudo decodificar el audio: el formato no es compatible con este navegador.');
     }
+    if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
     onProgress?.(0.5);
     const targetLength = Math.max(1, Math.floor(decoded.duration * sampleRate));
     const offline = new OfflineAudioContext(channels, targetLength, sampleRate);
@@ -89,6 +93,7 @@ async function decodeAndResample(
     src.connect(offline.destination);
     src.start(0);
     const rendered = await offline.startRendering();
+    if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
     onProgress?.(1);
     return rendered;
   } finally {
@@ -132,7 +137,9 @@ export async function encodeAudioBuffer(
   buffer: AudioBuffer,
   opts: EncodeAudioOptions,
   onProgress?: (p: number) => void,
+  signal?: AbortSignal,
 ): Promise<EncodedAudio> {
+  if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
   const label = AUDIO_CODEC_LABELS[opts.codec];
   if (typeof AudioEncoder === 'undefined') {
     throw new Error(
@@ -179,6 +186,7 @@ export async function encodeAudioBuffer(
     }
     let timestamp = 0;
     for (let offset = 0; offset < totalFrames; offset += FRAMES_PER_CHUNK) {
+      if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
       if (encodeError) throw encodeError;
       const frames = Math.min(FRAMES_PER_CHUNK, totalFrames - offset);
       // Formato planar: los planos van concatenados (canal 0, canal 1, ...).
@@ -190,8 +198,8 @@ export async function encodeAudioBuffer(
       const audioData = new AudioData({
         format: 'f32-planar',
         sampleRate,
-        numberOfFrames: frames,
         numberOfChannels: channels,
+        numberOfFrames: frames,
         timestamp,
         data: packed,
       });
@@ -222,8 +230,9 @@ export async function encodeAudioBufferToAac(
   buffer: AudioBuffer,
   opts: { sampleRate: number; channels: number; bitrate: number },
   onProgress?: (p: number) => void,
+  signal?: AbortSignal,
 ): Promise<AacChunk[]> {
-  const { chunks } = await encodeAudioBuffer(buffer, { codec: 'aac', ...opts }, onProgress);
+  const { chunks } = await encodeAudioBuffer(buffer, { codec: 'aac', ...opts }, onProgress, signal);
   return chunks;
 }
 
@@ -251,19 +260,24 @@ async function encodeMp4Audio(
   channels: 1 | 2,
   bitrate: number,
   onProgress?: (p: number) => void,
+  signal?: AbortSignal,
 ): Promise<Blob> {
   const rendered = await decodeAndResample(
     file,
     sampleRate,
     channels,
     (p) => onProgress?.(0.05 + p * 0.25),
+    signal,
   );
+  if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
   if (rendered.length === 0) throw new Error('El audio decodificado está vacío.');
   const { chunks } = await encodeAudioBuffer(
     rendered,
     { codec, sampleRate, channels, bitrate },
     (p) => onProgress?.(0.3 + p * 0.6),
+    signal,
   );
+  if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
   onProgress?.(0.95);
   const target = new ArrayBufferTarget();
   const muxer = new Muxer({
@@ -282,7 +296,9 @@ export async function convertAudio(
   file: File,
   opts: ConvertAudioOptions,
   onProgress?: (p: number) => void,
+  signal?: AbortSignal,
 ): Promise<ConvertAudioResult> {
+  if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
   const base = baseName(file.name);
   onProgress?.(0.05);
 
@@ -292,7 +308,9 @@ export async function convertAudio(
       opts.sampleRate,
       opts.channels,
       (p) => onProgress?.(0.05 + p * 0.85),
+      signal,
     );
+    if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
     if (rendered.length === 0) throw new Error('El audio decodificado está vacío.');
     onProgress?.(0.95);
     const blob = audioBufferToWavBlob(rendered);
@@ -311,16 +329,19 @@ export async function convertAudio(
         opts.channels,
         opts.bitrate,
         onProgress,
+        signal,
       );
       return { blob, mime: 'audio/mp4', name: `${base}.m4a` };
     } catch (e) {
+      if (signal?.aborted) throw e;
       aacDetail = e instanceof Error ? e.message : String(e);
     }
     // Respaldo: Opus a 48 kHz (óptimo) dentro de MP4 (p. ej. Firefox).
     try {
-      const blob = await encodeMp4Audio(file, 'opus', 48000, opts.channels, opts.bitrate, onProgress);
+      const blob = await encodeMp4Audio(file, 'opus', 48000, opts.channels, opts.bitrate, onProgress, signal);
       return { blob, mime: 'audio/mp4', name: `${base}.mp4` };
     } catch (e) {
+      if (signal?.aborted) throw e;
       const opusDetail = e instanceof Error ? e.message : String(e);
       throw new Error(
         `AUDIO_NO_DISPONIBLE: no se pudo codificar el audio para MP4. ` +
@@ -335,7 +356,9 @@ export async function convertAudio(
     opts.sampleRate,
     opts.channels,
     (p) => onProgress?.(0.05 + p * 0.2),
+    signal,
   );
+  if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
   if (rendered.length === 0) throw new Error('El audio decodificado está vacío.');
   if (typeof MediaRecorder === 'undefined') {
     throw new Error('Este navegador no soporta MediaRecorder: no se puede codificar WebM.');
@@ -368,6 +391,10 @@ export async function convertAudio(
     const totalMs = Math.max(500, rendered.duration * 1000 + 300);
     const start = performance.now();
     for (;;) {
+      if (signal?.aborted) {
+        if (recorder.state !== 'inactive') recorder.stop();
+        throw new DOMException('Operación cancelada', 'AbortError');
+      }
       await sleep(100);
       const frac = Math.min(1, (performance.now() - start) / totalMs);
       onProgress?.(0.25 + frac * 0.7);

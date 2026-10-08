@@ -65,6 +65,31 @@ function formatKbps(bps: number): string {
   return `${Math.round(bps / 1000)} kbps`;
 }
 
+const isWebmVideoSupported = (() => {
+  if (typeof MediaRecorder === 'undefined') return false;
+  try {
+    return (
+      MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus') ||
+      MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus') ||
+      MediaRecorder.isTypeSupported('video/webm')
+    );
+  } catch {
+    return false;
+  }
+})();
+
+const isWebmAudioSupported = (() => {
+  if (typeof MediaRecorder === 'undefined') return false;
+  try {
+    return (
+      MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ||
+      MediaRecorder.isTypeSupported('audio/webm')
+    );
+  } catch {
+    return false;
+  }
+})();
+
 export default function OptionsPanel() {
   const jobs = useConvertStore((s) => s.jobs);
   const options = useConvertStore((s) => s.options);
@@ -154,7 +179,10 @@ export default function OptionsPanel() {
               onChange={(v) => setOptions({ audioFormat: v })}
               options={[
                 { value: 'wav' as const, label: 'WAV' },
-                { value: 'webm' as const, label: 'WebM' },
+                {
+                  value: 'webm' as const,
+                  label: isWebmAudioSupported ? 'WebM' : 'WebM (no soportado)',
+                },
                 { value: 'mp4' as const, label: 'M4A' },
               ]}
             />
@@ -205,7 +233,10 @@ export default function OptionsPanel() {
               {(
                 [
                   { value: 'mp4', label: 'MP4' },
-                  { value: 'webm', label: 'WebM' },
+                  {
+                    value: 'webm',
+                    label: isWebmVideoSupported ? 'WebM' : 'WebM (no soportado)',
+                  },
                   { value: 'gif', label: 'GIF' },
                   { value: 'mp3', label: 'MP3*' },
                   { value: 'wav', label: 'WAV' },

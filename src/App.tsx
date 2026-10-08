@@ -9,6 +9,7 @@ import { convertImage } from './converters/image';
 import { convertVideo } from './converters/video';
 import { useConvertStore } from './lib/store';
 import { triggerDownload } from './utils/download';
+import { createZipBlob } from './utils/zip';
 
 const STATS = [
   { icon: ImageIcon, title: 'Imagen', detail: '9 entradas → PNG · JPEG · WebP' },
@@ -21,6 +22,8 @@ export default function App() {
   const fileMapRef = useRef(new Map<string, File>());
   // Ids cancelados por el usuario: el job en curso se descarta al terminar.
   const cancelledRef = useRef(new Set<string>());
+  // Controladores de cancelación activa por cada job en ejecución.
+  const abortControllersRef = useRef(new Map<string, AbortController>());
   // Ids en conversión ahora mismo: evita doble ejecución del mismo job.
   const runningRef = useRef(new Set<string>());
   const runningAllRef = useRef(false);
@@ -46,6 +49,8 @@ export default function App() {
     }
     // Conversión explícita: gana a una cancelación previa encolada.
     cancelledRef.current.delete(id);
+    const controller = new AbortController();
+    abortControllersRef.current.set(id, controller);
     runningRef.current.add(id);
     const started = performance.now();
     state.updateJob(id, { status: 'converting', progress: 0, message: 'Convirtiendo…', errorCode: undefined });
@@ -64,6 +69,7 @@ export default function App() {
             maxWidth: opts.imageMaxWidth > 0 ? opts.imageMaxWidth : undefined,
           },
           onProgress,
+          controller.signal,
         );
         result = { blob: r.blob, name: r.name, mime: r.mime };
       } else if (job.kind === 'audio') {
@@ -76,6 +82,7 @@ export default function App() {
             bitrate: opts.audioBitrate,
           },
           onProgress,
+          controller.signal,
         );
         result = { blob: r.blob, name: r.name, mime: r.mime };
       } else {
@@ -89,14 +96,14 @@ export default function App() {
             includeAudio: opts.videoIncludeAudio,
           },
           onProgress,
+          controller.signal,
         );
         result = { blob: r.blob, name: r.name, mime: r.mime };
       }
       const durationMs = Math.round(performance.now() - started);
       const store = useConvertStore.getState();
-      // Si se canceló o eliminó durante la conversión, se descarta el resultado
-      // (no se crean object URL persistentes: nada que revocar).
-      if (cancelledRef.current.has(id)) {
+      // Si se canceló o eliminó durante la conversión, se descarta el resultado.
+      if (controller.signal.aborted || cancelledRef.current.has(id)) {
         cancelledRef.current.delete(id);
         if (store.jobs.some((j) => j.id === id)) {
           store.updateJob(id, { status: 'queued', progress: 0, message: 'Cancelado' });
@@ -117,7 +124,12 @@ export default function App() {
     } catch (err) {
       const store = useConvertStore.getState();
       if (!store.jobs.some((j) => j.id === id)) return;
-      if (cancelledRef.current.has(id)) {
+      const isAborted =
+        controller.signal.aborted ||
+        cancelledRef.current.has(id) ||
+        (err instanceof DOMException && err.name === 'AbortError') ||
+        (err instanceof Error && /cancelad|abort/i.test(err.message));
+      if (isAborted) {
         cancelledRef.current.delete(id);
         store.updateJob(id, { status: 'queued', progress: 0, message: 'Cancelado' });
         return;
@@ -139,6 +151,7 @@ export default function App() {
         });
       }
     } finally {
+      abortControllersRef.current.delete(id);
       runningRef.current.delete(id);
     }
   }, []);
@@ -180,20 +193,34 @@ export default function App() {
     const job = useConvertStore.getState().jobs.find((j) => j.id === id);
     if (!job || job.status !== 'converting') return;
     cancelledRef.current.add(id);
+    const controller = abortControllersRef.current.get(id);
+    if (controller) {
+      controller.abort();
+      abortControllersRef.current.delete(id);
+    }
     useConvertStore.getState().updateJob(id, { message: 'Cancelando…' });
   }, []);
 
   const handleRemove = useCallback((id: string) => {
     // Marca cancelado para que un resultado en vuelo se descarte.
-    // No hay object URL persistentes: el Blob se libera con el job.
     cancelledRef.current.add(id);
+    const controller = abortControllersRef.current.get(id);
+    if (controller) {
+      controller.abort();
+      abortControllersRef.current.delete(id);
+    }
     fileMapRef.current.delete(id);
     useConvertStore.getState().removeJob(id);
   }, []);
 
   const handleClear = useCallback(() => {
     const { jobs, clearJobs } = useConvertStore.getState();
-    for (const j of jobs) cancelledRef.current.add(j.id);
+    for (const j of jobs) {
+      cancelledRef.current.add(j.id);
+      const controller = abortControllersRef.current.get(j.id);
+      if (controller) controller.abort();
+    }
+    abortControllersRef.current.clear();
     fileMapRef.current.clear();
     clearJobs();
   }, []);
@@ -201,6 +228,22 @@ export default function App() {
   const handleDownload = useCallback((id: string) => {
     const job = useConvertStore.getState().jobs.find((j) => j.id === id);
     if (job?.outputBlob && job.outputName) triggerDownload(job.outputBlob, job.outputName);
+  }, []);
+
+  const handleDownloadAll = useCallback(async () => {
+    const { jobs } = useConvertStore.getState();
+    const completed = jobs.filter((j) => j.status === 'done' && j.outputBlob && j.outputName);
+    if (completed.length === 0) return;
+    if (completed.length === 1) {
+      triggerDownload(completed[0].outputBlob!, completed[0].outputName!);
+      return;
+    }
+    const entries = completed.map((j) => ({
+      name: j.outputName!,
+      blob: j.outputBlob!,
+    }));
+    const zipBlob = await createZipBlob(entries);
+    triggerDownload(zipBlob, `hydra-convert-${Date.now()}.zip`);
   }, []);
 
   return (
@@ -253,6 +296,7 @@ export default function App() {
               onCancel={handleCancel}
               onRemove={handleRemove}
               onDownload={handleDownload}
+              onDownloadAll={() => void handleDownloadAll()}
             />
           </div>
         </div>

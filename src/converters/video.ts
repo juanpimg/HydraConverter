@@ -165,8 +165,10 @@ async function waitForDrain(
   encoder: VideoEncoder,
   getFatal: () => Error | null,
   label: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   for (;;) {
+    if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
     try {
       const fatal = getFatal();
       if (fatal) throw fatal;
@@ -175,6 +177,7 @@ async function waitForDrain(
       }
       if (encoder.encodeQueueSize <= 3) return;
     } catch (e) {
+      if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
       if (e instanceof Error && e.message.startsWith(H264_PREFIX)) throw e;
       const fatal = (() => {
         try {
@@ -338,10 +341,13 @@ async function convertThumbnail(
   file: File,
   format: 'png' | 'jpg',
   onProgress?: (p: number) => void,
+  signal?: AbortSignal,
 ): Promise<ConvertVideoResult> {
+  if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
   const loaded = await loadVideoElement(file);
   const { video, url } = loaded;
   try {
+    if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
     if (loaded.width <= 0 || loaded.height <= 0) {
       throw new Error('No se pudieron leer las dimensiones del vídeo.');
     }
@@ -349,6 +355,7 @@ async function convertThumbnail(
     const t =
       Number.isFinite(loaded.duration) && loaded.duration > 0 ? loaded.duration * 0.25 : 0;
     await seekVideo(video, t);
+    if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
     onProgress?.(0.5);
     const { width, height } = targetSize(loaded.width, loaded.height, 'original');
     const canvas = document.createElement('canvas');
@@ -357,8 +364,10 @@ async function convertThumbnail(
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('Canvas 2D no disponible en este navegador.');
     ctx.drawImage(video, 0, 0, width, height);
+    if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
     const mime = format === 'png' ? 'image/png' : 'image/jpeg';
     const blob = await canvasToBlob(canvas, mime, 0.92);
+    if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
     onProgress?.(1);
     return {
       blob,
@@ -380,12 +389,15 @@ async function convertAudioOnly(
   format: 'mp3' | 'wav',
   bitrate: number,
   onProgress?: (p: number) => void,
+  signal?: AbortSignal,
 ): Promise<ConvertVideoResult> {
+  if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
   if (format === 'wav') {
     const r = await convertAudio(
       file,
       { format: 'wav', sampleRate: 44100, channels: 2, bitrate },
       onProgress,
+      signal,
     );
     return { blob: r.blob, mime: r.mime, name: withExt(file.name, '.wav') };
   }
@@ -394,6 +406,7 @@ async function convertAudioOnly(
     file,
     { format: 'mp4', sampleRate: 44100, channels: 2, bitrate },
     onProgress,
+    signal,
   );
   return { blob: r.blob, mime: r.mime, name: withExt(file.name, '.m4a') };
 }
@@ -404,7 +417,9 @@ async function convertToMp4(
   file: File,
   opts: ConvertVideoOptions,
   onProgress?: (p: number) => void,
+  signal?: AbortSignal,
 ): Promise<ConvertVideoResult> {
+  if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
   if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') {
     throw new Error('Este navegador no soporta WebCodecs (VideoEncoder): no se puede codificar MP4.');
   }
@@ -412,6 +427,7 @@ async function convertToMp4(
   const { video, url } = loaded;
   let videoEncoder: VideoEncoder | null = null;
   try {
+    if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
     const duration = loaded.duration;
     if (!Number.isFinite(duration) || duration <= 0) {
       throw new Error('No se pudo determinar la duración del vídeo.');
@@ -435,34 +451,46 @@ async function convertToMp4(
     let audioCodec: 'aac' | 'opus' = 'aac';
     let audioSampleRate = 44100;
     if (opts.includeAudio) {
-      const aacBuffer = await decodeFileAudio(file, 44100);
-      if (aacBuffer && aacBuffer.length > 0) {
+      if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
+      const audioBuffer = await decodeFileAudio(file, 44100);
+      if (audioBuffer && audioBuffer.length > 0) {
+        if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
         try {
           const chunks = await encodeAudioBufferToAac(
-            aacBuffer,
+            audioBuffer,
             { sampleRate: 44100, channels: audioChannels, bitrate: audioBitrate },
             (p) => onProgress?.(0.03 + p * 0.05),
+            signal,
           );
           if (chunks.length > 0) audioChunks = chunks;
-        } catch {
+        } catch (e) {
+          if (signal?.aborted) throw e;
           /* sin AAC: se prueba Opus */
         }
-      }
-      if (audioChunks.length === 0) {
-        const opusBuffer = await decodeFileAudio(file, 48000);
-        if (opusBuffer && opusBuffer.length > 0) {
+        if (audioChunks.length === 0) {
+          if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
           try {
+            const targetLength = Math.max(1, Math.floor(audioBuffer.duration * 48000));
+            const offline = new OfflineAudioContext(audioChannels, targetLength, 48000);
+            const src = offline.createBufferSource();
+            src.buffer = audioBuffer;
+            src.connect(offline.destination);
+            src.start(0);
+            const opusBuffer = await offline.startRendering();
+            if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
             const { chunks } = await encodeAudioBuffer(
               opusBuffer,
               { codec: 'opus', sampleRate: 48000, channels: audioChannels, bitrate: audioBitrate },
               (p) => onProgress?.(0.03 + p * 0.05),
+              signal,
             );
             if (chunks.length > 0) {
               audioChunks = chunks;
               audioCodec = 'opus';
               audioSampleRate = 48000;
             }
-          } catch {
+          } catch (e) {
+            if (signal?.aborted) throw e;
             audioChunks = []; // sin audio: se entrega solo vídeo
           }
         }
@@ -604,9 +632,11 @@ async function convertToMp4(
 
     const recovered = { done: false };
     for (let i = 0; i < totalFrames; i++) {
+      if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
       assertAliveOrRecover(recovered);
       const t = Math.min(i / fps, Math.max(0, duration - 0.05));
       await seekVideo(video, t);
+      if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
       // El encoder puede morir durante el seek (callback de error asíncrono):
       // comprobar ANTES de encode() para no ver el críptico
       // "VideoEncoder.encode: Encoder must be configured first".
@@ -671,9 +701,10 @@ async function convertToMp4(
       // recupera (una vez) y se avanza al siguiente sin re-codificar.
       try {
         const enc = videoEncoder;
-        if (enc) await waitForDrain(enc, getFatal, videoCodecLabel);
+        if (enc) await waitForDrain(enc, getFatal, videoCodecLabel, signal);
         else assertEncoderAlive();
       } catch (e) {
+        if (signal?.aborted) throw e;
         if (!recovered.done && tryRecoverOnce()) {
           recovered.done = true;
         } else {
@@ -682,6 +713,7 @@ async function convertToMp4(
       }
       onProgress?.(0.08 + (0.82 * (i + 1)) / totalFrames);
     }
+    if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
     try {
       const enc = videoEncoder;
       if (!enc) throw h264Error('El codificador de vídeo se detuvo de forma inesperada');
@@ -742,7 +774,9 @@ async function convertToWebm(
   file: File,
   opts: ConvertVideoOptions,
   onProgress?: (p: number) => void,
+  signal?: AbortSignal,
 ): Promise<ConvertVideoResult> {
+  if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
   if (typeof MediaRecorder === 'undefined') {
     throw new Error('Este navegador no soporta MediaRecorder: no se puede codificar WebM.');
   }
@@ -751,6 +785,7 @@ async function convertToWebm(
   let audioCtx: AudioContext | null = null;
   let rafId = 0;
   try {
+    if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
     const duration = loaded.duration;
     if (!Number.isFinite(duration) || duration <= 0) {
       throw new Error('No se pudo determinar la duración del vídeo.');
@@ -837,6 +872,14 @@ async function convertToWebm(
     const totalMs = duration * 1000 + 1500;
     const start = performance.now();
     for (;;) {
+      if (signal?.aborted) {
+        drawing = false;
+        cancelAnimationFrame(rafId);
+        video.pause();
+        if (recorder.state !== 'inactive') recorder.stop();
+        recordStream.getTracks().forEach((track) => track.stop());
+        throw new DOMException('Operación cancelada', 'AbortError');
+      }
       await sleep(100);
       const frac = Math.min(1, (performance.now() - start) / totalMs);
       onProgress?.(0.1 + frac * 0.85);
@@ -1000,10 +1043,13 @@ async function convertToGif(
   file: File,
   opts: ConvertVideoOptions,
   onProgress?: (p: number) => void,
+  signal?: AbortSignal,
 ): Promise<ConvertVideoResult> {
+  if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
   const loaded = await loadVideoElement(file);
   const { video, url } = loaded;
   try {
+    if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
     const duration = loaded.duration;
     if (!Number.isFinite(duration) || duration <= 0) {
       throw new Error('No se pudo determinar la duración del vídeo.');
@@ -1026,12 +1072,15 @@ async function convertToGif(
 
     const frames: Uint8Array[] = [];
     for (let i = 0; i < count; i++) {
+      if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
       const t = count === 1 ? 0 : Math.min(i / sampleFps, Math.max(0, duration - 0.05));
       await seekVideo(video, t);
+      if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
       ctx.drawImage(video, 0, 0, W, H);
       frames.push(mapTo332(ctx.getImageData(0, 0, W, H).data));
       onProgress?.(0.05 + (0.85 * (i + 1)) / count);
     }
+    if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
     const delayCs = Math.max(2, Math.round(100 / sampleFps));
     const blob = encodeGif89a(frames, W, H, delayCs);
     onProgress?.(1);
@@ -1054,20 +1103,22 @@ export async function convertVideo(
   file: File,
   opts: ConvertVideoOptions,
   onProgress?: (p: number) => void,
+  signal?: AbortSignal,
 ): Promise<ConvertVideoResult> {
+  if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
   switch (opts.format) {
     case 'png':
     case 'jpg':
-      return convertThumbnail(file, opts.format, onProgress);
+      return convertThumbnail(file, opts.format, onProgress, signal);
     case 'wav':
     case 'mp3':
-      return convertAudioOnly(file, opts.format, opts.bitrate, onProgress);
+      return convertAudioOnly(file, opts.format, opts.bitrate, onProgress, signal);
     case 'mp4':
-      return convertToMp4(file, opts, onProgress);
+      return convertToMp4(file, opts, onProgress, signal);
     case 'webm':
-      return convertToWebm(file, opts, onProgress);
+      return convertToWebm(file, opts, onProgress, signal);
     case 'gif':
-      return convertToGif(file, opts, onProgress);
+      return convertToGif(file, opts, onProgress, signal);
     default:
       throw new Error('Formato de vídeo no soportado.');
   }

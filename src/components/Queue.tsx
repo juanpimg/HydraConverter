@@ -25,6 +25,7 @@ interface QueueProps {
   onCancel: (id: string) => void;
   onRemove: (id: string) => void;
   onDownload: (id: string) => void;
+  onDownloadAll?: () => void;
 }
 
 const KIND_ICON: Record<FileKind, LucideIcon> = {
@@ -194,8 +195,16 @@ function JobRow({
   );
 }
 
-export default function Queue({ onConvert, onRetryAsWebm, onCancel, onRemove, onDownload }: QueueProps) {
+export default function Queue({
+  onConvert,
+  onRetryAsWebm,
+  onCancel,
+  onRemove,
+  onDownload,
+  onDownloadAll,
+}: QueueProps) {
   const jobs = useConvertStore((s) => s.jobs);
+  const completedJobs = jobs.filter((j) => j.status === 'done' && j.outputBlob);
 
   return (
     <section
@@ -210,6 +219,19 @@ export default function Queue({ onConvert, onRetryAsWebm, onCancel, onRemove, on
             {jobs.length}
           </span>
         </h2>
+        {completedJobs.length > 1 && onDownloadAll && (
+          <button
+            type="button"
+            id="download-all-zip"
+            data-action="download-all-zip"
+            onClick={onDownloadAll}
+            className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-600/20 px-2.5 py-1 text-xs font-medium text-emerald-300 transition-colors hover:bg-emerald-600/30"
+            title="Descargar lote en archivo .zip"
+          >
+            <Download className="h-3.5 w-3.5" aria-hidden />
+            Descargar lote (.zip) ({completedJobs.length})
+          </button>
+        )}
       </div>
 
       {jobs.length === 0 ? (
