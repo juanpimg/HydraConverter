@@ -210,7 +210,7 @@ export default function Queue({
     <section
       id="queue"
       aria-label="Cola de conversión"
-      className="flex min-h-[320px] flex-col rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4"
+      className="flex min-h-[440px] flex-col rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4"
     >
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-sm font-semibold text-zinc-200">

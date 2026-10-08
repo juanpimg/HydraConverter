@@ -113,10 +113,11 @@ async function main() {
     await page.waitForSelector('[data-job-id]', { timeout: 5000 });
     console.log('[test] Job encolado. Iniciando conversión…');
 
-    // Cambiar formato a WebM (MediaRecorder dura 3s)
+    // Cambiar formato a WebM (MediaRecorder dura 3s en tiempo real)
     await page.evaluate(() => {
-      const store = window.__convertStore;
-      // Iniciar conversión vía click
+      const btns = Array.from(document.querySelectorAll('#options-panel button'));
+      const webmBtn = btns.find((b) => b.textContent?.trim() === 'WebM');
+      if (webmBtn) webmBtn.click();
     });
 
     const convertBtn = await page.waitForSelector('[data-action="convert"]', { timeout: 5000 });
@@ -127,8 +128,10 @@ async function main() {
     console.log('[test] Job en estado converting. Pulsando Cancelar…');
 
     const cancelStart = Date.now();
-    const cancelBtn = await page.$('[data-action="cancel"]');
-    await cancelBtn.click();
+    await page.evaluate(() => {
+      const btn = document.querySelector('[data-action="cancel"]');
+      if (btn instanceof HTMLElement) btn.click();
+    });
 
     // Debe volver a estado 'queued' o mensaje 'Cancelado'
     await page.waitForFunction(
