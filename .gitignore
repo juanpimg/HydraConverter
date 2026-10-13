@@ -12,3 +12,15 @@ apps/hydra-convert/test-artifacts/
 npm-debug.log*
 *.log
 .DS_Store
+# Added by code-review-graph
+.code-review-graph/
+
+# secrets / env — nunca subir claves ni certificados locales
+.env*
+!.env.example
+.certs/
+*.pem
+*.key
+
+# herramientas locales de agentes (contienen rutas absolutas)
+.agents/

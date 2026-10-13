@@ -1,5 +1,9 @@
 # Hydra Convert
 
+[![Client-Side](https://img.shields.io/badge/Architecture-100%25%20Client--Side-emerald)](#)
+[![Privacy](https://img.shields.io/badge/Privacy-Zero%20Data%20Collected-blue)](#)
+[![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE)
+
 Conversor de vídeo, audio e imagen **100% local**: todo se procesa en el navegador con
 WebCodecs, Canvas 2D y WebAudio. Sin backend, sin subidas, sin descargas en runtime.
 
@@ -59,18 +63,18 @@ Si ningún encoder de vídeo inicializa, el job muestra el error con botón **«
 ## Dev / Build / Test
 
 ```bash
-# Desarrollo (puerto 5174)
-npm run dev --workspace=apps/hydra-convert
+# Desarrollo (puerto 5176)
+npm run dev
 
 # Tipos + build
-npm run build --workspace=apps/hydra-convert
+npm run build
 
 # Suites de prueba
-npm run test:convert:unit      # Vitest: utilidades ZIP, formatBytes, detect
-npm run test:convert:cancel-zip# E2E: Cancelación cooperativa <50ms y descarga ZIP
-npm run test:convert           # Chrome smoke: imagen + audio + móvil 390px, 0 console errors
-npm run test:convert:video     # Chrome matriz de vídeo: 7 casos (1080p30/60, vertical, impar, mov, sin audio, 480p/24)
-npm run test:convert:firefox   # Firefox real: 6 casos (mp4, webm, wav, m4a, webp)
+npm run test:unit      # Vitest: utilidades ZIP, formatBytes, detect
+npm run test:cancel-zip# E2E: Cancelación cooperativa <50ms y descarga ZIP
+npm run test           # Chrome smoke: imagen + audio + móvil 390px, 0 console errors
+npm run test:video     # Chrome matriz de vídeo: 7 casos (1080p30/60, vertical, impar, mov, sin audio, 480p/24)
+npm run test:firefox   # Firefox real: 6 casos (mp4, webm, wav, m4a, webp)
 
 # ⚠️ Las suites de navegador deben correrse EN SERIE (Chrome headless SwiftShader se mata en paralelo).
 ```
@@ -91,6 +95,11 @@ Repo independiente listo para conectar: `https://github.com/juanpimg/HydraConver
 al repo de deploy con `npm run sync:convert` (desde la raíz del monorepo). Luego
 `git add -A && git commit && git push origin main` en `../HydraConverter` — Cloudflare
 redespliega automáticamente.
+
+## Seguridad
+
+100% local: sin backend, sin claves ni tokens en el repo. `.env*`, `.certs/`, `*.pem` y
+`*.key` están ignorados en `.gitignore` y nunca deben commitearse.
 
 > Tras un despliegue, si el navegador muestra una versión vieja, hacer **un hard-refresh
 > (Ctrl+Mayús+R)** para expulsar el service worker anterior.
