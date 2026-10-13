@@ -1,4 +1,4 @@
-import { Loader2, Play, ShieldCheck, Trash2, Zap } from 'lucide-react';
+import { Github, Loader2, Play, ShieldCheck, Trash2, Zap } from 'lucide-react';
 import { useConvertStore } from '../lib/store';
 
 interface HeaderProps {
@@ -30,6 +30,18 @@ export default function Header({ runningAll, onConvertAll, onClear }: HeaderProp
           <ShieldCheck className="h-3.5 w-3.5" aria-hidden />
           100% Local
         </span>
+
+        <a
+          href="https://github.com/juanpimg/HydraConverter"
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Ver código en GitHub — ¡contribuye!"
+          aria-label="Ver HydraConvert en GitHub (pestaña nueva)"
+          className="flex items-center gap-1.5 rounded-lg border border-zinc-700 px-2.5 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:bg-zinc-800"
+        >
+          <Github className="h-3.5 w-3.5" aria-hidden />
+          <span className="hidden sm:inline">GitHub</span>
+        </a>
 
         <button
           id="clear-all"
