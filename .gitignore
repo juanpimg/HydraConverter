@@ -24,3 +24,4 @@ npm-debug.log*
 
 # herramientas locales de agentes (contienen rutas absolutas)
 .agents/
+.codex/

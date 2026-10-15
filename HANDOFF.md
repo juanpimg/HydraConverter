@@ -7,30 +7,25 @@
 
 | Ubicación | Rol |
 | :--- | :--- |
-| `editor/apps/hydra-convert/` (monorepo) | **Desarrollo** — aquí se trabaja y se prueban los cambios |
-| `Proyectos/HydraConverter/` (repo independiente) | **Deploy** — se sincroniza y se sube a GitHub |
+| `HydraApps/apps/hydra-convert/` (este repo) | **Desarrollo y deploy** — aquí se trabaja; push a `main` despliega |
 
 - Remoto de deploy: `https://github.com/juanpimg/HydraConverter.git` (`origin`, rama `main`).
 - Cloudflare Pages redespliega automáticamente al hacer push a `main` (config en README).
 - **Último commit desplegado:** `6b3737e` (Firefox VP9+Opus + SW v3), versión `v1.0.2`.
-- Sincronización (desde la raíz del monorepo):
+- Flujo de trabajo (desde `HydraApps/apps/hydra-convert/`):
 
 ```bash
-npm run sync:convert
-# equivale a:
-rsync -a --delete --exclude node_modules --exclude dist --exclude test-artifacts \
-  --exclude .git --exclude package-lock.json \
-  apps/hydra-convert/ ../HydraConverter/
-cd ../HydraConverter && git add -A && git commit -m "..." && git push origin main
+git add -A && git commit -m "..." && git push origin main
 ```
 
-## 2. Verificación actual (todo verde, 2026-10-09)
+## 2. Verificación actual (todo verde, 2026-10-12)
 
 | Prueba | Comando | Resultado |
 | :--- | :--- | :--- |
-| Tipos + build | `npm run build --workspace=apps/hydra-convert` | ✅ tsc + vite build limpio (0 errores) |
-| Unitarios vitest | `npm run test:convert:unit` | ✅ 8/8 tests (ZIP, CRC32, formatBytes, detectKindByMime) |
-| Cancel & ZIP E2E | `npm run test:convert:cancel-zip` | ✅ Cancelación en 46ms (<1s) y descarga de `.zip` verificada con 0 console errors |
+| Tipos + build | `npm run build` | ✅ tsc + vite build limpio (0 errores) |
+| Unitarios vitest | `npm run test:unit` | ✅ 11/11 tests (ZIP, CRC32, formatBytes, detectKindByMime, WAV) |
+| Suite auditoría E2E | `npm run test:audit` | ✅ 6/6 tests: JPEG blanco, SVG viewBox, WebM audio/video <1.5s, GIF dither, audio mudo |
+| Cancel & ZIP E2E | `npm run test:cancel-zip` | ✅ Cancelación en 13ms (<1s) y descarga de `.zip` verificada con 0 console errors |
 | Chrome smoke | `npm run test:convert` | ✅ PNG→WebP (descarga verificada), WAV→WAV, móvil 390px sin scroll horizontal, 0 console errors |
 | Chrome matriz vídeo | `npm run test:convert:video` | ✅ 7/7 `done`: 1080p30, 1080p60, vertical 720x1280, impar 321x241, mov, sin audio, 480p/24fps |
 | Firefox E2E | `npm run test:convert:firefox` | ✅ 6/6 `done`: mp4, webm→mp4, webm, wav, m4a, webp; 0 console errors |
@@ -75,8 +70,8 @@ cd ../HydraConverter && git add -A && git commit -m "..." && git push origin mai
 | `fa8523e` | v1 inicial: conversores + UI + Cloudflare Pages ready |
 | `b25277d` | Fix H.264: sonda real de config (L5.2/Baseline × HW/SW) y causa real ante muerte asíncrona |
 | `85a0650` | Recuperación única + «Probar como WebM» en UI + SW network-first v2 + matriz de vídeo |
-| `6b3737e` | Firefox MP4 VP9+Opus (fallback automático H.264/AAC), audio m4a→opus-in-mp4, SW v3, suite Firefox E2E |
 | `PRÓXIMO` | **Actual**: Cancelación cooperativa `AbortSignal` (<50ms), ZIP lote nativo, tests vitest (8/8), suite cancel-zip y audio buffer reuse |
+| `IMPECCABLE` | **Diseño & A11y**: Integración de Impeccable (`.agents/skills/impeccable`), auditoría técnica de GUI, simplificación KISS (desduplicación "100% Local"), focus-visible, semántica WAI-ARIA en tabs/selects, touch targets $\ge 36\text{–}44\text{px}$ y contraste WCAG AA |
 
 ## 5. Deuda / próximos pasos sugeridos
 
@@ -89,16 +84,15 @@ cd ../HydraConverter && git add -A && git commit -m "..." && git push origin mai
 ## 6. Comandos
 
 ```bash
-# Desde la raíz del monorepo
-npm run dev:convert            # dev en :5174
-npm run build:convert          # tsc + vite
-npm run test:convert:unit      # 8 tests vitest
-npm run test:convert:cancel-zip# cancel y zip batch E2E
-npm run test:convert           # Chrome smoke
-npm run test:convert:video     # Chrome matriz de vídeo
-npm run test:convert:firefox   # Firefox E2E
-npm run sync:convert           # sincronizar al repo de deploy
+# Desde HydraApps/apps/hydra-convert
+npm run dev            # dev en :5176
+npm run build          # tsc + vite
+npm run test:unit      # 8 tests vitest
+npm run test:cancel-zip# cancel y zip batch E2E
+npm run test           # Chrome smoke
+npm run test:video     # Chrome matriz de vídeo
+npm run test:firefox   # Firefox E2E
 
 # Verificar deploy
-cd ../HydraConverter && git ls-remote origin HEAD   # debe coincidir con git rev-parse HEAD
+git ls-remote origin HEAD   # debe coincidir con git rev-parse HEAD
 ```

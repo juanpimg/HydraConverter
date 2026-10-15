@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { ShieldCheck, UploadCloud } from 'lucide-react';
+import { UploadCloud } from 'lucide-react';
 import { detectKindByMime, probeAudio, probeImage, probeVideo } from '../lib/detect';
 import { useConvertStore } from '../lib/store';
 import type { FileKind } from '../lib/types';
@@ -103,10 +103,10 @@ export default function Dropzone({ onFilesAdded }: DropzoneProps) {
         setDragging(false);
         if (e.dataTransfer.files.length > 0) handleFiles(e.dataTransfer.files);
       }}
-      className={`cursor-pointer rounded-2xl border-2 border-dashed p-6 text-center transition-colors sm:p-8 ${
+      className={`cursor-pointer rounded-2xl border-2 border-dashed p-6 text-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950 sm:p-8 ${
         dragging
           ? 'border-emerald-500 bg-emerald-500/10'
-          : 'border-zinc-700 bg-zinc-900/60 hover:border-zinc-500 hover:bg-zinc-900'
+          : 'border-zinc-700/80 bg-zinc-900/60 hover:border-zinc-500 hover:bg-zinc-900'
       }`}
     >
       <input
@@ -122,17 +122,13 @@ export default function Dropzone({ onFilesAdded }: DropzoneProps) {
         }}
       />
       <UploadCloud
-        className={`mx-auto h-10 w-10 ${dragging ? 'text-emerald-400' : 'text-zinc-500'}`}
+        className={`mx-auto h-10 w-10 ${dragging ? 'text-emerald-400' : 'text-zinc-400'}`}
         aria-hidden
       />
       <p className="mt-3 text-sm font-semibold text-zinc-100">
         {dragging ? 'Suelta los archivos aquí' : 'Arrastra archivos o haz clic para elegirlos'}
       </p>
-      <p className="mt-1 text-xs text-zinc-500">Vídeo · Audio · Imagen — múltiples a la vez</p>
-      <div className="mt-4 flex items-center justify-center gap-1.5 text-[11px] font-medium text-emerald-400">
-        <ShieldCheck className="h-3.5 w-3.5" aria-hidden />
-        100% local — tus archivos nunca salen de este dispositivo
-      </div>
+      <p className="mt-1 text-xs text-zinc-400">Vídeo · Audio · Imagen</p>
     </section>
   );
 }

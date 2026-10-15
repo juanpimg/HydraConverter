@@ -41,17 +41,71 @@ function clampQuality(q: number): number {
   return Math.min(1, Math.max(0, q));
 }
 
-function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality: number): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (blob) => {
-        if (blob) resolve(blob);
-        else reject(new Error(`El navegador no pudo codificar la imagen como ${type}.`));
-      },
-      type,
-      quality,
+function dataUrlToBlob(canvas: HTMLCanvasElement, type: string, quality: number): Blob {
+  const dataUrl = canvas.toDataURL(type, quality);
+  const commaIdx = dataUrl.indexOf(',');
+  const header = commaIdx >= 0 ? dataUrl.slice(0, commaIdx) : '';
+  const match = header.match(/^data:([^;,]+)/);
+  const resolvedType = match ? match[1] : type;
+  const base64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl;
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: resolvedType });
+}
+
+export function canvasToBlob(
+  canvas: HTMLCanvasElement,
+  type = 'image/png',
+  quality = 0.92,
+): Promise<Blob> {
+  if (typeof canvas.toBlob === 'function') {
+    return new Promise((resolve, reject) => {
+      try {
+        canvas.toBlob(
+          (blob) => {
+            if (blob) {
+              resolve(blob);
+            } else {
+              try {
+                resolve(dataUrlToBlob(canvas, type, quality));
+              } catch (err) {
+                reject(
+                  new Error(
+                    `El navegador no pudo codificar la imagen como ${type}: ${err instanceof Error ? err.message : 'fallback toDataURL falló'}`,
+                  ),
+                );
+              }
+            }
+          },
+          type,
+          quality,
+        );
+      } catch {
+        try {
+          resolve(dataUrlToBlob(canvas, type, quality));
+        } catch (err) {
+          reject(
+            new Error(
+              `El navegador no pudo codificar la imagen como ${type}: ${err instanceof Error ? err.message : 'fallback toDataURL falló'}`,
+            ),
+          );
+        }
+      }
+    });
+  }
+
+  try {
+    return Promise.resolve(dataUrlToBlob(canvas, type, quality));
+  } catch (err) {
+    return Promise.reject(
+      new Error(
+        `El navegador no pudo codificar la imagen como ${type}: ${err instanceof Error ? err.message : 'fallback toDataURL falló'}`,
+      ),
     );
-  });
+  }
 }
 
 interface DecodedImage {
@@ -62,11 +116,74 @@ interface DecodedImage {
   height: number;
 }
 
+async function decodeSvgImage(file: File): Promise<DecodedImage> {
+  const text = await file.text();
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(text, 'image/svg+xml');
+  const svgEl = doc.querySelector('svg');
+  if (!svgEl) throw new Error('El archivo SVG no tiene un elemento <svg> válido.');
+
+  let width = parseFloat(svgEl.getAttribute('width') || '0');
+  let height = parseFloat(svgEl.getAttribute('height') || '0');
+
+  if (width <= 0 || height <= 0 || !Number.isFinite(width) || !Number.isFinite(height)) {
+    const viewBox = svgEl.getAttribute('viewBox');
+    if (viewBox) {
+      const parts = viewBox.trim().split(/[\s,]+/).map(parseFloat);
+      if (parts.length === 4 && parts[2] > 0 && parts[3] > 0) {
+        width = parts[2];
+        height = parts[3];
+      }
+    }
+  }
+  if (width <= 0 || height <= 0 || !Number.isFinite(width) || !Number.isFinite(height)) {
+    width = 800;
+    height = 800;
+  }
+
+  svgEl.setAttribute('width', String(width));
+  svgEl.setAttribute('height', String(height));
+  const serializer = new XMLSerializer();
+  const modifiedSvg = serializer.serializeToString(doc);
+  const blob = new Blob([modifiedSvg], { type: 'image/svg+xml' });
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('No se pudo leer el archivo SVG.'));
+      el.src = objectUrl;
+    });
+    return {
+      source: img,
+      bitmap: null,
+      objectUrl,
+      width: img.naturalWidth || width,
+      height: img.naturalHeight || height,
+    };
+  } catch (err) {
+    URL.revokeObjectURL(objectUrl);
+    throw err;
+  }
+}
+
 async function decodeImage(file: File): Promise<DecodedImage> {
+  const isSvg = file.type === 'image/svg+xml' || file.name.toLowerCase().endsWith('.svg');
+  if (isSvg) {
+    try {
+      return await decodeSvgImage(file);
+    } catch {
+      // Fallback a createImageBitmap / <img> estándar si falla el parser XML
+    }
+  }
+
   if (typeof createImageBitmap === 'function') {
     try {
       const bitmap = await createImageBitmap(file);
-      return { source: bitmap, bitmap, objectUrl: null, width: bitmap.width, height: bitmap.height };
+      if (bitmap.width > 0 && bitmap.height > 0) {
+        return { source: bitmap, bitmap, objectUrl: null, width: bitmap.width, height: bitmap.height };
+      }
+      bitmap.close();
     } catch {
       // Fallback a <img> (p. ej. SVG sin tamaño intrínseco).
     }
@@ -120,6 +237,10 @@ export async function convertImage(
     canvas.height = height;
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('Canvas 2D no disponible en este navegador.');
+    if (opts.format === 'jpeg') {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+    }
     ctx.drawImage(decoded.source, 0, 0, width, height);
     onProgress?.(0.7);
 

@@ -12,6 +12,7 @@
  *         (`audio/webm;codecs=opus`) con regrabado en tiempo real.
  */
 import { ArrayBufferTarget, Muxer } from 'mp4-muxer';
+import { ArrayBufferTarget as WebmArrayBufferTarget, Muxer as WebmMuxer } from 'webm-muxer';
 import { audioBufferToWavBlob } from '../utils/wav-encoder';
 
 export interface ConvertAudioOptions {
@@ -75,7 +76,12 @@ async function decodeAndResample(
   if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
   const raw = await file.arrayBuffer();
   if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
-  const ctx = new AudioContext({ sampleRate });
+  let ctx: AudioContext;
+  try {
+    ctx = new AudioContext();
+  } catch {
+    ctx = new AudioContext({ sampleRate });
+  }
   try {
     let decoded: AudioBuffer;
     try {
@@ -350,7 +356,41 @@ export async function convertAudio(
     }
   }
 
-  // webm: regrabado en tiempo real del buffer ya remuestreado.
+  // webm: codificación offline y ultra-rápida con WebCodecs (Opus) + webm-muxer; fallback a MediaRecorder.
+  if (typeof AudioEncoder !== 'undefined') {
+    try {
+      const rendered = await decodeAndResample(
+        file,
+        48000,
+        opts.channels,
+        (p) => onProgress?.(0.05 + p * 0.35),
+        signal,
+      );
+      if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
+      if (rendered.length === 0) throw new Error('El audio decodificado está vacío.');
+      const { chunks } = await encodeAudioBuffer(
+        rendered,
+        { codec: 'opus', sampleRate: 48000, channels: opts.channels, bitrate: opts.bitrate },
+        (p) => onProgress?.(0.4 + p * 0.55),
+        signal,
+      );
+      if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
+      const target = new WebmArrayBufferTarget();
+      const muxer = new WebmMuxer({
+        target,
+        audio: { codec: 'A_OPUS', sampleRate: 48000, numberOfChannels: opts.channels },
+      });
+      for (const { chunk, meta } of chunks) muxer.addAudioChunk(chunk, meta);
+      muxer.finalize();
+      onProgress?.(1);
+      return { blob: new Blob([target.buffer], { type: 'audio/webm' }), mime: 'audio/webm', name: `${base}.webm` };
+    } catch (e) {
+      if (signal?.aborted) throw e;
+      /* fallback a MediaRecorder si WebCodecs fallase */
+    }
+  }
+
+  // Fallback: regrabado en tiempo real con MediaRecorder
   const rendered = await decodeAndResample(
     file,
     opts.sampleRate,
@@ -361,7 +401,7 @@ export async function convertAudio(
   if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
   if (rendered.length === 0) throw new Error('El audio decodificado está vacío.');
   if (typeof MediaRecorder === 'undefined') {
-    throw new Error('Este navegador no soporta MediaRecorder: no se puede codificar WebM.');
+    throw new Error('Este navegador no soporta MediaRecorder ni WebCodecs: no se puede codificar WebM.');
   }
   const ctx = new AudioContext();
   try {
@@ -369,6 +409,11 @@ export async function convertAudio(
       await ctx.resume();
     } catch {
       /* política de autoplay: se intenta igualmente */
+    }
+    if (typeof ctx.createMediaStreamDestination !== 'function') {
+      throw new Error(
+        'Este navegador no soporta captura de audio con MediaRecorder (createMediaStreamDestination no disponible).',
+      );
     }
     const dest = ctx.createMediaStreamDestination();
     const src = ctx.createBufferSource();

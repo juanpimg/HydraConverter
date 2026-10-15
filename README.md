@@ -60,6 +60,14 @@ Si ningún encoder de vídeo inicializa, el job muestra el error con botón **«
   `/assets/*` — evita servir una versión vieja de la app tras cada despliegue.
 - Cero `fetch(http)` en runtime: todo está bundleado con Vite.
 
+## Calidad, Accesibilidad (A11y) y Diseño Impeccable
+
+La interfaz ha sido auditada y simplificada siguiendo el estándar **[Impeccable](https://github.com/pbakaus/impeccable)** y la regla **KISS** (*Keep It Simple, Stupid*):
+- **Accesibilidad WCAG AA:** Anillos de foco explícitos `:focus-visible`, soporte de `prefers-reduced-motion`, `role="alert"` para errores y ratios de contraste de texto $\ge 4.5:1$ en toda la aplicación.
+- **Semántica WAI-ARIA:** Pestañas conectadas con `aria-controls` / `aria-labelledby`, `<label>` reales vinculados a todos los desplegables y controles deslizantes con `aria-valuetext`.
+- **Simplificación KISS:** Eliminación de redundancias defensivas (unificación del badge *"100% Local"* en el pie), lista de cola aplanada sin anidamiento pesado (*cards inside cards*) y layout responsive adaptado a pantallas móviles estrechas con áreas de toque $\ge 36\text{–}44\text{px}$.
+- **Inspección de anti-patrones:** Integración con el CLI de Impeccable (`npx impeccable detect src/`).
+
 ## Dev / Build / Test
 
 ```bash

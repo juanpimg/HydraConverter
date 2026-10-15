@@ -43,10 +43,10 @@ const STATUS_META: Record<JobStatus, { label: string; icon: LucideIcon; chip: st
 };
 
 function iconButtonClass(disabled = false): string {
-  return `rounded-lg p-1.5 transition-colors ${
+  return `flex min-h-[36px] min-w-[36px] sm:min-h-[32px] sm:min-w-[32px] items-center justify-center rounded-lg p-1.5 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
     disabled
       ? 'cursor-not-allowed text-zinc-700'
-      : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100'
+      : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 active:scale-95'
   }`;
 }
 
@@ -74,10 +74,10 @@ function JobRow({
     <li
       data-job-id={job.id}
       data-status={job.status}
-      className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3"
+      className="rounded-xl border border-zinc-800/80 bg-zinc-900/50 p-3 transition-colors hover:border-zinc-700/80"
     >
       <div className="flex items-start gap-3">
-        <span className="mt-0.5 rounded-lg bg-zinc-800 p-2 text-zinc-300" aria-hidden>
+        <span className="mt-0.5 rounded-lg bg-zinc-800/90 p-2 text-zinc-300" aria-hidden>
           <KindIcon className="h-4 w-4" />
         </span>
         <div className="min-w-0 flex-1">
@@ -92,7 +92,7 @@ function JobRow({
               {meta.label}
             </span>
           </div>
-          <p className="mt-0.5 text-xs text-zinc-500">
+          <p className="mt-0.5 text-xs text-zinc-400">
             {formatBytes(job.fileSize)}
             {job.durationMs !== undefined && job.status === 'done'
               ? ` · ${(job.durationMs / 1000).toFixed(1)}s`
@@ -101,8 +101,9 @@ function JobRow({
           </p>
           {job.message && (
             <p
-              className={`mt-0.5 truncate text-xs ${job.status === 'error' ? 'text-rose-400' : 'text-zinc-500'}`}
+              className={`mt-0.5 truncate text-xs ${job.status === 'error' ? 'text-rose-400 font-medium' : 'text-zinc-400'}`}
               title={job.message}
+              role={job.status === 'error' ? 'alert' : undefined}
             >
               {job.message}
             </p>
@@ -125,7 +126,7 @@ function JobRow({
         </div>
       </div>
 
-      <div className="mt-2 flex items-center justify-end gap-1">
+      <div className="mt-2 flex flex-wrap items-center justify-end gap-1.5">
         {job.status === 'converting' && (
           <button
             type="button"
@@ -145,14 +146,14 @@ function JobRow({
             title={job.status === 'error' ? 'Reintentar' : 'Convertir'}
             aria-label={`${job.status === 'error' ? 'Reintentar' : 'Convertir'} ${job.fileName}`}
             onClick={() => onConvert(job.id)}
-            className="flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-emerald-500"
+            className="flex min-h-[36px] sm:min-h-[32px] items-center gap-1 rounded-lg bg-emerald-500 px-2.5 py-1.5 text-xs font-semibold text-zinc-950 transition-all hover:bg-emerald-400 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
           >
             {job.status === 'error' ? (
               <RotateCcw className="h-3.5 w-3.5" />
             ) : (
-              <Play className="h-3.5 w-3.5" />
+              <Play className="h-3.5 w-3.5 fill-current" />
             )}
-            {job.status === 'error' ? 'Reintentar' : 'Convertir'}
+            <span>{job.status === 'error' ? 'Reintentar' : 'Convertir'}</span>
           </button>
         )}
         {job.status === 'error' && job.errorCode === 'H264_UNAVAILABLE' && (
@@ -162,7 +163,7 @@ function JobRow({
             title="Probar como WebM"
             aria-label={`Probar como WebM ${job.fileName}`}
             onClick={() => onRetryAsWebm(job.id)}
-            className="flex items-center gap-1 rounded-lg border border-zinc-700 px-2.5 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800"
+            className="flex min-h-[36px] sm:min-h-[32px] items-center gap-1 rounded-lg border border-zinc-700/80 px-2.5 py-1.5 text-xs font-medium text-zinc-200 transition-all hover:bg-zinc-800 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
           >
             Probar como WebM
           </button>
@@ -174,10 +175,10 @@ function JobRow({
             title="Descargar"
             aria-label={`Descargar ${job.outputName ?? job.fileName}`}
             onClick={() => onDownload(job.id)}
-            className="flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-emerald-500"
+            className="flex min-h-[36px] sm:min-h-[32px] items-center gap-1 rounded-lg bg-emerald-500 px-2.5 py-1.5 text-xs font-semibold text-zinc-950 transition-all hover:bg-emerald-400 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
           >
             <Download className="h-3.5 w-3.5" />
-            Descargar
+            <span>Descargar</span>
           </button>
         )}
         <button
@@ -210,7 +211,7 @@ export default function Queue({
     <section
       id="queue"
       aria-label="Cola de conversión"
-      className="flex min-h-[440px] flex-col rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4"
+      className="flex min-h-[280px] sm:min-h-[360px] lg:min-h-[440px] flex-col rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4"
     >
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-sm font-semibold text-zinc-200">
@@ -225,7 +226,7 @@ export default function Queue({
             id="download-all-zip"
             data-action="download-all-zip"
             onClick={onDownloadAll}
-            className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-600/20 px-2.5 py-1 text-xs font-medium text-emerald-300 transition-colors hover:bg-emerald-600/30"
+            className="flex min-h-[32px] items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-600/20 px-2.5 py-1 text-xs font-medium text-emerald-300 transition-colors hover:bg-emerald-600/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
             title="Descargar lote en archivo .zip"
           >
             <Download className="h-3.5 w-3.5" aria-hidden />
@@ -236,14 +237,14 @@ export default function Queue({
 
       {jobs.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 py-10 text-center">
-          <Inbox className="h-8 w-8 text-zinc-700" aria-hidden />
-          <p className="text-sm text-zinc-500">Sin archivos todavía</p>
-          <p className="max-w-[260px] text-xs text-zinc-600">
-            Añade vídeo, audio o imagen desde el panel izquierdo para empezar.
+          <Inbox className="h-8 w-8 text-zinc-600" aria-hidden />
+          <p className="text-sm font-medium text-zinc-300">Sin archivos todavía</p>
+          <p className="max-w-[280px] text-xs text-zinc-400">
+            Arrastra archivos o selecciónalos desde la izquierda para empezar.
           </p>
         </div>
       ) : (
-        <ul className="flex flex-col gap-2 overflow-y-auto">
+        <ul className="flex flex-col gap-2 overflow-y-auto" aria-live="polite">
           {jobs.map((job) => (
             <JobRow
               key={job.id}

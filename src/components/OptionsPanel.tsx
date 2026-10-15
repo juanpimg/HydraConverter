@@ -13,15 +13,31 @@ const TABS: Array<{ id: PanelTab; label: string; icon: LucideIcon }> = [
 ];
 
 const selectClass =
-  'w-full rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-sm text-zinc-100 outline-none focus:border-emerald-500';
+  'w-full min-h-[38px] rounded-lg border border-zinc-700/80 bg-zinc-900 px-2.5 py-1.5 text-sm text-zinc-100 transition-colors focus-visible:outline-none focus-visible:border-emerald-500 focus-visible:ring-2 focus-visible:ring-emerald-500';
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+function Field({
+  label,
+  hint,
+  htmlFor,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  htmlFor?: string;
+  children: ReactNode;
+}) {
   return (
     <div className="block">
-      <span className="mb-1 flex items-baseline justify-between text-xs font-medium text-zinc-400">
-        <span>{label}</span>
-        {hint ? <span className="font-mono text-[11px] text-zinc-500">{hint}</span> : null}
-      </span>
+      <div className="mb-1.5 flex items-baseline justify-between text-xs font-medium text-zinc-300">
+        {htmlFor ? (
+          <label htmlFor={htmlFor} className="cursor-pointer">
+            {label}
+          </label>
+        ) : (
+          <span>{label}</span>
+        )}
+        {hint ? <span className="font-mono text-[11px] text-zinc-400">{hint}</span> : null}
+      </div>
       {children}
     </div>
   );
@@ -46,8 +62,10 @@ function Segmented<T extends string | number>({
             type="button"
             onClick={() => onChange(o.value)}
             aria-pressed={active}
-            className={`rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${
-              active ? 'bg-emerald-600 text-white' : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+            className={`min-h-[34px] rounded-md px-2 py-1.5 text-xs font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+              active
+                ? 'bg-emerald-500 font-semibold text-zinc-950 shadow-sm'
+                : 'text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100'
             }`}
           >
             {o.label}
@@ -65,7 +83,8 @@ function formatKbps(bps: number): string {
   return `${Math.round(bps / 1000)} kbps`;
 }
 
-const isWebmVideoSupported = (() => {
+export function checkWebmVideoSupport(): boolean {
+  if (typeof VideoEncoder !== 'undefined') return true;
   if (typeof MediaRecorder === 'undefined') return false;
   try {
     return (
@@ -76,9 +95,10 @@ const isWebmVideoSupported = (() => {
   } catch {
     return false;
   }
-})();
+}
 
-const isWebmAudioSupported = (() => {
+export function checkWebmAudioSupport(): boolean {
+  if (typeof AudioEncoder !== 'undefined') return true;
   if (typeof MediaRecorder === 'undefined') return false;
   try {
     return (
@@ -88,7 +108,10 @@ const isWebmAudioSupported = (() => {
   } catch {
     return false;
   }
-})();
+}
+
+export const isWebmVideoSupported = checkWebmVideoSupport();
+export const isWebmAudioSupported = checkWebmAudioSupport();
 
 export default function OptionsPanel() {
   const jobs = useConvertStore((s) => s.jobs);
@@ -107,19 +130,27 @@ export default function OptionsPanel() {
         <h2 className="text-sm font-semibold text-zinc-200">Opciones de salida</h2>
       </div>
 
-      <div className="mb-4 grid grid-cols-3 gap-1 rounded-xl bg-zinc-950 p-1" role="tablist" aria-label="Tipo de salida">
+      <div
+        className="mb-4 grid grid-cols-3 gap-1 rounded-xl bg-zinc-950 p-1"
+        role="tablist"
+        aria-label="Tipo de salida"
+      >
         {TABS.map((t) => {
           const Icon = t.icon;
           const selected = t.id === active;
           return (
             <button
               key={t.id}
+              id={`tab-${t.id}`}
               type="button"
               role="tab"
               aria-selected={selected}
+              aria-controls={`panel-${t.id}`}
               onClick={() => setManual(t.id)}
-              className={`flex items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium transition-colors ${
-                selected ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'
+              className={`flex min-h-[36px] items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+                selected
+                  ? 'bg-zinc-800 text-zinc-100 shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-200'
               }`}
             >
               <Icon className="h-3.5 w-3.5" aria-hidden />
@@ -130,7 +161,13 @@ export default function OptionsPanel() {
       </div>
 
       {active === 'image' && (
-        <div className="flex flex-col gap-3" role="tabpanel">
+        <div
+          id="panel-image"
+          role="tabpanel"
+          aria-labelledby="tab-image"
+          tabIndex={0}
+          className="flex flex-col gap-3 focus:outline-none"
+        >
           <Field label="Formato">
             <Segmented
               value={options.imageFormat}
@@ -150,12 +187,14 @@ export default function OptionsPanel() {
               step={1}
               value={Math.round(options.imageQuality * 100)}
               onChange={(e) => setOptions({ imageQuality: Number(e.target.value) / 100 })}
-              className="w-full"
+              className="w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
               aria-label="Calidad de imagen"
+              aria-valuetext={`${Math.round(options.imageQuality * 100)}%`}
             />
           </Field>
-          <Field label="Ancho máximo">
+          <Field label="Ancho máximo" htmlFor="select-image-max-width">
             <select
+              id="select-image-max-width"
               value={options.imageMaxWidth}
               onChange={(e) => setOptions({ imageMaxWidth: Number(e.target.value) })}
               className={selectClass}
@@ -172,7 +211,13 @@ export default function OptionsPanel() {
       )}
 
       {active === 'audio' && (
-        <div className="flex flex-col gap-3" role="tabpanel">
+        <div
+          id="panel-audio"
+          role="tabpanel"
+          aria-labelledby="tab-audio"
+          tabIndex={0}
+          className="flex flex-col gap-3 focus:outline-none"
+        >
           <Field label="Formato">
             <Segmented
               value={options.audioFormat}
@@ -187,8 +232,9 @@ export default function OptionsPanel() {
               ]}
             />
           </Field>
-          <Field label="Frecuencia de muestreo">
+          <Field label="Frecuencia de muestreo" htmlFor="select-audio-sample-rate">
             <select
+              id="select-audio-sample-rate"
               value={options.audioSampleRate}
               onChange={(e) => setOptions({ audioSampleRate: Number(e.target.value) })}
               className={selectClass}
@@ -210,8 +256,9 @@ export default function OptionsPanel() {
               ]}
             />
           </Field>
-          <Field label="Bitrate">
+          <Field label="Bitrate" htmlFor="select-audio-bitrate">
             <select
+              id="select-audio-bitrate"
               value={options.audioBitrate}
               onChange={(e) => setOptions({ audioBitrate: Number(e.target.value) })}
               className={selectClass}
@@ -227,7 +274,13 @@ export default function OptionsPanel() {
       )}
 
       {active === 'video' && (
-        <div className="flex flex-col gap-3" role="tabpanel">
+        <div
+          id="panel-video"
+          role="tabpanel"
+          aria-labelledby="tab-video"
+          tabIndex={0}
+          className="flex flex-col gap-3 focus:outline-none"
+        >
           <Field label="Formato">
             <div className="flex flex-wrap gap-1.5">
               {(
@@ -251,10 +304,10 @@ export default function OptionsPanel() {
                     type="button"
                     onClick={() => setOptions({ videoFormat: o.value })}
                     aria-pressed={selected}
-                    className={`rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                    className={`min-h-[34px] rounded-lg px-2.5 py-1.5 text-xs font-medium transition-all active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
                       selected
-                        ? 'bg-emerald-600 text-white'
-                        : 'bg-zinc-900 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+                        ? 'bg-emerald-500 font-semibold text-zinc-950 shadow-sm'
+                        : 'bg-zinc-900 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100'
                     }`}
                   >
                     {o.label}
@@ -263,11 +316,12 @@ export default function OptionsPanel() {
               })}
             </div>
           </Field>
-          <p className="-mt-1 text-[11px] text-zinc-500">
+          <p className="-mt-1 text-[11px] text-zinc-400">
             * MP3 se entrega como .m4a (AAC): la web no tiene codificador MP3.
           </p>
-          <Field label="Resolución">
+          <Field label="Resolución" htmlFor="select-video-resolution">
             <select
+              id="select-video-resolution"
               value={options.videoResolution}
               onChange={(e) =>
                 setOptions({
@@ -302,24 +356,25 @@ export default function OptionsPanel() {
               step={500_000}
               value={options.videoBitrate}
               onChange={(e) => setOptions({ videoBitrate: Number(e.target.value) })}
-              className="w-full"
+              className="w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
               aria-label="Bitrate de vídeo"
+              aria-valuetext={`${(options.videoBitrate / 1_000_000).toFixed(1)} Mbps`}
             />
           </Field>
           <div>
-            <span className="mb-1 block text-xs font-medium text-zinc-400">Pista de audio</span>
+            <span className="mb-1.5 block text-xs font-medium text-zinc-300">Pista de audio</span>
             <button
               type="button"
-              role="checkbox"
+              role="switch"
               aria-checked={options.videoIncludeAudio}
               aria-label="Incluir audio del vídeo original"
               onClick={() => setOptions({ videoIncludeAudio: !options.videoIncludeAudio })}
-              className="flex w-full items-center justify-between rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-2 text-sm"
+              className="flex min-h-[44px] w-full items-center justify-between rounded-lg border border-zinc-700/80 bg-zinc-900 px-3 py-2 text-sm transition-colors hover:border-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
             >
               <span className="text-zinc-200">Incluir audio</span>
               <span
                 className={`relative h-5 w-9 rounded-full transition-colors ${
-                  options.videoIncludeAudio ? 'bg-emerald-600' : 'bg-zinc-700'
+                  options.videoIncludeAudio ? 'bg-emerald-500' : 'bg-zinc-700'
                 }`}
               >
                 <span

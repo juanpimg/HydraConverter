@@ -264,8 +264,8 @@ export default function App() {
       </main>
 
       <footer className="border-t border-zinc-800/80">
-        <div className="mx-auto flex w-full max-w-6xl items-center justify-center gap-2 px-4 py-3.5 text-center text-xs text-zinc-500">
-          <WifiOff className="h-3.5 w-3.5 text-emerald-500/80" aria-hidden />
+        <div className="mx-auto flex w-full max-w-6xl items-center justify-center gap-2 px-4 py-3.5 text-center text-xs text-zinc-400">
+          <WifiOff className="h-3.5 w-3.5 text-emerald-400" aria-hidden />
           <p>
             Procesamiento 100% local en tu dispositivo · Sin servidores · Sin límites de tamaño
           </p>

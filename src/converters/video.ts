@@ -17,6 +17,11 @@
  *            dithering, bucle infinito).
  */
 import { ArrayBufferTarget, Muxer, type MuxerOptions } from 'mp4-muxer';
+import {
+  ArrayBufferTarget as WebmArrayBufferTarget,
+  Muxer as WebmMuxer,
+  type MuxerOptions as WebmMuxerOptions,
+} from 'webm-muxer';
 import { convertAudio, encodeAudioBuffer, encodeAudioBufferToAac, type AacChunk } from './audio';
 
 export type VideoOutputFormat = 'mp4' | 'webm' | 'gif' | 'mp3' | 'wav' | 'png' | 'jpg';
@@ -51,17 +56,71 @@ function withExt(fileName: string, ext: string): string {
   return `${baseName(fileName)}${ext}`;
 }
 
-function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality: number): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (blob) => {
-        if (blob) resolve(blob);
-        else reject(new Error(`El navegador no pudo codificar la imagen como ${type}.`));
-      },
-      type,
-      quality,
+function dataUrlToBlob(canvas: HTMLCanvasElement, type: string, quality: number): Blob {
+  const dataUrl = canvas.toDataURL(type, quality);
+  const commaIdx = dataUrl.indexOf(',');
+  const header = commaIdx >= 0 ? dataUrl.slice(0, commaIdx) : '';
+  const match = header.match(/^data:([^;,]+)/);
+  const resolvedType = match ? match[1] : type;
+  const base64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl;
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: resolvedType });
+}
+
+export function canvasToBlob(
+  canvas: HTMLCanvasElement,
+  type = 'image/png',
+  quality = 0.92,
+): Promise<Blob> {
+  if (typeof canvas.toBlob === 'function') {
+    return new Promise((resolve, reject) => {
+      try {
+        canvas.toBlob(
+          (blob) => {
+            if (blob) {
+              resolve(blob);
+            } else {
+              try {
+                resolve(dataUrlToBlob(canvas, type, quality));
+              } catch (err) {
+                reject(
+                  new Error(
+                    `El navegador no pudo codificar la imagen como ${type}: ${err instanceof Error ? err.message : 'fallback toDataURL falló'}`,
+                  ),
+                );
+              }
+            }
+          },
+          type,
+          quality,
+        );
+      } catch {
+        try {
+          resolve(dataUrlToBlob(canvas, type, quality));
+        } catch (err) {
+          reject(
+            new Error(
+              `El navegador no pudo codificar la imagen como ${type}: ${err instanceof Error ? err.message : 'fallback toDataURL falló'}`,
+            ),
+          );
+        }
+      }
+    });
+  }
+
+  try {
+    return Promise.resolve(dataUrlToBlob(canvas, type, quality));
+  } catch (err) {
+    return Promise.reject(
+      new Error(
+        `El navegador no pudo codificar la imagen como ${type}: ${err instanceof Error ? err.message : 'fallback toDataURL falló'}`,
+      ),
     );
-  });
+  }
 }
 
 /* ---------------- helpers de vídeo ---------------- */
@@ -314,7 +373,12 @@ async function pickVideoCodec(
 async function decodeFileAudio(file: File, sampleRate = 44100): Promise<AudioBuffer | null> {
   try {
     const raw = await file.arrayBuffer();
-    const ctx = new AudioContext({ sampleRate });
+    let ctx: AudioContext;
+    try {
+      ctx = new AudioContext();
+    } catch {
+      ctx = new AudioContext({ sampleRate });
+    }
     try {
       const decoded = await ctx.decodeAudioData(raw);
       const offline = new OfflineAudioContext(2, Math.max(1, Math.floor(decoded.duration * sampleRate)), sampleRate);
@@ -337,7 +401,7 @@ async function decodeFileAudio(file: File, sampleRate = 44100): Promise<AudioBuf
 
 /* ---------------- png/jpg (frame único) ---------------- */
 
-async function convertThumbnail(
+export async function convertThumbnail(
   file: File,
   format: 'png' | 'jpg',
   onProgress?: (p: number) => void,
@@ -363,6 +427,10 @@ async function convertThumbnail(
     canvas.height = height;
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('Canvas 2D no disponible en este navegador.');
+    if (format === 'jpg') {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+    }
     ctx.drawImage(video, 0, 0, width, height);
     if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
     const mime = format === 'png' ? 'image/png' : 'image/jpeg';
@@ -392,23 +460,32 @@ async function convertAudioOnly(
   signal?: AbortSignal,
 ): Promise<ConvertVideoResult> {
   if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
-  if (format === 'wav') {
+  try {
+    if (format === 'wav') {
+      const r = await convertAudio(
+        file,
+        { format: 'wav', sampleRate: 44100, channels: 2, bitrate },
+        onProgress,
+        signal,
+      );
+      return { blob: r.blob, mime: r.mime, name: withExt(file.name, '.wav') };
+    }
+    // Sin codificador MP3 en la web: se entrega AAC (.m4a), compatible.
     const r = await convertAudio(
       file,
-      { format: 'wav', sampleRate: 44100, channels: 2, bitrate },
+      { format: 'mp4', sampleRate: 44100, channels: 2, bitrate },
       onProgress,
       signal,
     );
-    return { blob: r.blob, mime: r.mime, name: withExt(file.name, '.wav') };
+    return { blob: r.blob, mime: r.mime, name: withExt(file.name, '.m4a') };
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/no se pudo decodificar el audio|vacío|no compatible/i.test(msg)) {
+      throw new Error('El archivo de vídeo no contiene ninguna pista de audio para extraer.');
+    }
+    throw err;
   }
-  // Sin codificador MP3 en la web: se entrega AAC (.m4a), compatible.
-  const r = await convertAudio(
-    file,
-    { format: 'mp4', sampleRate: 44100, channels: 2, bitrate },
-    onProgress,
-    signal,
-  );
-  return { blob: r.blob, mime: r.mime, name: withExt(file.name, '.m4a') };
 }
 
 /* ---------------- mp4 (H.264/VP9 + AAC/Opus) ---------------- */
@@ -420,8 +497,12 @@ async function convertToMp4(
   signal?: AbortSignal,
 ): Promise<ConvertVideoResult> {
   if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
-  if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') {
-    throw new Error('Este navegador no soporta WebCodecs (VideoEncoder): no se puede codificar MP4.');
+  if (
+    typeof VideoEncoder === 'undefined' ||
+    typeof VideoFrame === 'undefined' ||
+    typeof VideoEncoder.isConfigSupported !== 'function'
+  ) {
+    throw h264Error('Este navegador no soporta WebCodecs (VideoEncoder): no se puede codificar MP4');
   }
   const loaded = await loadVideoElement(file);
   const { video, url } = loaded;
@@ -756,7 +837,45 @@ async function convertToMp4(
   }
 }
 
-/* ---------------- webm (MediaRecorder en tiempo real) ---------------- */
+/* ---------------- webm (WebCodecs + webm-muxer con fallback MediaRecorder) ---------------- */
+
+interface PickedWebmVideoCodec {
+  containerCodec: 'V_VP9' | 'V_VP8';
+  codec: string;
+  hardwareAcceleration?: HardwareAcceleration;
+}
+
+const WEBM_CODEC_CANDIDATES: Array<{ codec: string; containerCodec: 'V_VP9' | 'V_VP8' }> = [
+  { codec: 'vp09.00.10.08', containerCodec: 'V_VP9' },
+  { codec: 'vp09.00.31.08', containerCodec: 'V_VP9' },
+  { codec: 'vp8', containerCodec: 'V_VP8' },
+];
+
+async function pickWebmVideoCodec(
+  width: number,
+  height: number,
+  bitrate: number,
+  framerate: number,
+): Promise<PickedWebmVideoCodec | null> {
+  const safeBitrate = Math.max(100_000, Math.floor(bitrate) || 5_000_000);
+  const base = { width, height, bitrate: safeBitrate, framerate };
+  for (const candidate of WEBM_CODEC_CANDIDATES) {
+    try {
+      const support = await VideoEncoder.isConfigSupported({ ...base, codec: candidate.codec });
+      if (!support.supported) continue;
+    } catch {
+      continue;
+    }
+    for (const hardwareAcceleration of VP9_ACCEL_CANDIDATES) {
+      const config: VideoEncoderConfig = { ...base, codec: candidate.codec };
+      if (hardwareAcceleration) config.hardwareAcceleration = hardwareAcceleration;
+      if (await probeVideoEncoder(config)) {
+        return { containerCodec: candidate.containerCodec, codec: candidate.codec, hardwareAcceleration };
+      }
+    }
+  }
+  return null;
+}
 
 function pickWebmVideoMime(): string | undefined {
   const candidates = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
@@ -770,7 +889,226 @@ function pickWebmVideoMime(): string | undefined {
   return undefined;
 }
 
-async function convertToWebm(
+async function convertToWebmWithWebCodecs(
+  file: File,
+  opts: ConvertVideoOptions,
+  onProgress?: (p: number) => void,
+  signal?: AbortSignal,
+): Promise<ConvertVideoResult> {
+  if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
+  if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') {
+    throw new Error('Este navegador no soporta WebCodecs: usando fallback.');
+  }
+  const loaded = await loadVideoElement(file);
+  const { video, url } = loaded;
+  let videoEncoder: VideoEncoder | null = null;
+  try {
+    if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
+    const duration = loaded.duration;
+    if (!Number.isFinite(duration) || duration <= 0) {
+      throw new Error('No se pudo determinar la duración del vídeo.');
+    }
+    if (loaded.width <= 0 || loaded.height <= 0) {
+      throw new Error('No se pudieron leer las dimensiones del vídeo.');
+    }
+    const fps = opts.fps > 0 ? Math.floor(opts.fps) : 30;
+    const { width: W, height: H } = targetSize(loaded.width, loaded.height, opts.resolution);
+    const totalFrames = Math.max(1, Math.floor(duration * fps));
+    const frameDurationUs = Math.max(1, Math.round(1_000_000 / fps));
+    const safeBitrate = Math.max(100_000, Math.floor(opts.bitrate) || 5_000_000);
+    onProgress?.(0.03);
+
+    const audioChannels = 2;
+    const audioBitrate = 128_000;
+    let audioChunks: AacChunk[] = [];
+    if (opts.includeAudio) {
+      if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
+      const audioBuffer = await decodeFileAudio(file, 48000);
+      if (audioBuffer && audioBuffer.length > 0) {
+        if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
+        try {
+          const { chunks } = await encodeAudioBuffer(
+            audioBuffer,
+            { codec: 'opus', sampleRate: 48000, channels: audioChannels, bitrate: audioBitrate },
+            (p) => onProgress?.(0.03 + p * 0.05),
+            signal,
+          );
+          if (chunks.length > 0) audioChunks = chunks;
+        } catch (e) {
+          if (signal?.aborted) throw e;
+          audioChunks = [];
+        }
+      }
+    }
+    onProgress?.(0.08);
+
+    const videoCodec = await pickWebmVideoCodec(W, H, safeBitrate, fps);
+    if (!videoCodec) {
+      throw new Error('No se pudo inicializar ningún codificador VP9/VP8 para WebM.');
+    }
+
+    const target = new WebmArrayBufferTarget();
+    const muxerOptions: WebmMuxerOptions<WebmArrayBufferTarget> = {
+      target,
+      video: { codec: videoCodec.containerCodec, width: W, height: H, frameRate: fps },
+      firstTimestampBehavior: 'offset',
+    };
+    if (audioChunks.length > 0) {
+      muxerOptions.audio = {
+        codec: 'A_OPUS',
+        sampleRate: 48000,
+        numberOfChannels: audioChannels,
+      };
+    }
+    const muxer = new WebmMuxer(muxerOptions);
+
+    const videoChunks: { chunk: EncodedVideoChunk; meta: EncodedVideoChunkMetadata | undefined }[] = [];
+    let encodeError: Error | null = null;
+    const getFatal = (): Error | null => encodeError;
+    const makeEncoder = (): VideoEncoder =>
+      new VideoEncoder({
+        output: (chunk, meta) => {
+          videoChunks.push({ chunk, meta });
+        },
+        error: (e) => {
+          if (!encodeError) {
+            encodeError = new Error(`El codificador WebM falló: ${e.message || 'error desconocido'}`);
+          }
+        },
+      });
+
+    const configureEncoder = (enc: VideoEncoder): void => {
+      enc.configure({
+        codec: videoCodec.codec,
+        width: W,
+        height: H,
+        bitrate: safeBitrate,
+        framerate: fps,
+        hardwareAcceleration: videoCodec.hardwareAcceleration,
+      });
+    };
+
+    videoEncoder = makeEncoder();
+    configureEncoder(videoEncoder);
+
+    const assertEncoderAlive = (): void => {
+      if (encodeError) throw encodeError;
+      if (!videoEncoder || videoEncoder.state !== 'configured') {
+        throw new Error('El codificador de vídeo WebM se detuvo de forma inesperada');
+      }
+    };
+
+    const tryRecoverOnce = (): boolean => {
+      if (!videoEncoder) return false;
+      try {
+        videoEncoder.close();
+      } catch {}
+      encodeError = null;
+      const next = makeEncoder();
+      try {
+        configureEncoder(next);
+      } catch {
+        try { next.close(); } catch {}
+        return false;
+      }
+      videoEncoder = next;
+      return true;
+    };
+
+    const assertAliveOrRecover = (recovered: { done: boolean }): void => {
+      try {
+        assertEncoderAlive();
+      } catch (e) {
+        if (!recovered.done && tryRecoverOnce()) {
+          recovered.done = true;
+          assertEncoderAlive();
+          return;
+        }
+        throw e;
+      }
+    };
+
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext('2d', { alpha: false });
+    if (!ctx) throw new Error('Canvas 2D no disponible en este navegador.');
+
+    const recovered = { done: false };
+    for (let i = 0; i < totalFrames; i++) {
+      if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
+      assertAliveOrRecover(recovered);
+      const t = Math.min(i / fps, Math.max(0, duration - 0.05));
+      await seekVideo(video, t);
+      if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
+      assertAliveOrRecover(recovered);
+      ctx.drawImage(video, 0, 0, W, H);
+      const timestamp = Math.round((i * 1_000_000) / fps);
+
+      for (;;) {
+        let frame: VideoFrame | null = null;
+        try {
+          frame = new VideoFrame(canvas, { timestamp, duration: frameDurationUs });
+          const enc = videoEncoder;
+          if (!enc) throw new Error('El codificador de vídeo WebM se detuvo');
+          enc.encode(frame, { keyFrame: i % 60 === 0 });
+          break;
+        } catch (e) {
+          if (encodeError && !recovered.done && tryRecoverOnce()) {
+            recovered.done = true;
+            continue;
+          }
+          throw encodeError || e;
+        } finally {
+          if (frame) {
+            try { frame.close(); } catch {}
+          }
+        }
+      }
+
+      try {
+        const enc = videoEncoder;
+        if (enc) await waitForDrain(enc, getFatal, 'WebM', signal);
+        else assertEncoderAlive();
+      } catch (e) {
+        if (signal?.aborted) throw e;
+        if (!recovered.done && tryRecoverOnce()) {
+          recovered.done = true;
+        } else {
+          throw e;
+        }
+      }
+      onProgress?.(0.08 + (0.82 * (i + 1)) / totalFrames);
+    }
+
+    if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
+    const enc = videoEncoder;
+    if (!enc) throw new Error('El codificador de vídeo se detuvo');
+    await enc.flush();
+    assertEncoderAlive();
+
+    for (const { chunk, meta } of videoChunks) muxer.addVideoChunk(chunk, meta);
+    for (const { chunk, meta } of audioChunks) muxer.addAudioChunk(chunk, meta);
+    muxer.finalize();
+    onProgress?.(1);
+
+    return {
+      blob: new Blob([target.buffer], { type: 'video/webm' }),
+      mime: 'video/webm',
+      name: withExt(file.name, '.webm'),
+      width: W,
+      height: H,
+    };
+  } finally {
+    video.pause();
+    if (videoEncoder && videoEncoder.state !== 'closed') {
+      try { videoEncoder.close(); } catch {}
+    }
+    URL.revokeObjectURL(url);
+  }
+}
+
+export async function convertToWebmWithMediaRecorder(
   file: File,
   opts: ConvertVideoOptions,
   onProgress?: (p: number) => void,
@@ -778,7 +1116,7 @@ async function convertToWebm(
 ): Promise<ConvertVideoResult> {
   if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
   if (typeof MediaRecorder === 'undefined') {
-    throw new Error('Este navegador no soporta MediaRecorder: no se puede codificar WebM.');
+    throw new Error('Este navegador no soporta MediaRecorder ni WebCodecs: no se puede codificar WebM.');
   }
   const loaded = await loadVideoElement(file);
   const { video, url } = loaded;
@@ -801,7 +1139,25 @@ async function convertToWebm(
     if (!ctx) throw new Error('Canvas 2D no disponible en este navegador.');
 
     const fps = Math.max(1, Math.floor(opts.fps) || 30);
-    const canvasStream = canvas.captureStream(fps);
+    const anyCanvas = canvas as HTMLCanvasElement & {
+      mozCaptureStream?: (fps?: number) => MediaStream;
+      webkitCaptureStream?: (fps?: number) => MediaStream;
+    };
+    const captureStreamFn =
+      typeof anyCanvas.captureStream === 'function'
+        ? anyCanvas.captureStream.bind(anyCanvas)
+        : typeof anyCanvas.mozCaptureStream === 'function'
+        ? anyCanvas.mozCaptureStream.bind(anyCanvas)
+        : typeof anyCanvas.webkitCaptureStream === 'function'
+        ? anyCanvas.webkitCaptureStream.bind(anyCanvas)
+        : null;
+
+    if (!captureStreamFn) {
+      throw new Error(
+        'Este navegador no soporta captura de stream desde canvas (captureStream no disponible).',
+      );
+    }
+    const canvasStream = captureStreamFn(fps);
 
     let recordStream: MediaStream = canvasStream;
     if (opts.includeAudio) {
@@ -863,7 +1219,24 @@ async function convertToWebm(
           /* frame aún no listo */
         }
       }
-      rafId = requestAnimationFrame(draw);
+      if (typeof requestAnimationFrame === 'function') {
+        rafId = requestAnimationFrame(draw);
+      } else {
+        rafId = setTimeout(draw, Math.max(1, Math.round(1000 / fps))) as unknown as number;
+      }
+    };
+    const cancelRaf = (): void => {
+      if (!rafId) return;
+      if (typeof cancelAnimationFrame === 'function') {
+        try {
+          cancelAnimationFrame(rafId);
+        } catch {}
+      } else {
+        try {
+          clearTimeout(rafId);
+        } catch {}
+      }
+      rafId = 0;
     };
     draw();
     recorder.start(250);
@@ -874,7 +1247,7 @@ async function convertToWebm(
     for (;;) {
       if (signal?.aborted) {
         drawing = false;
-        cancelAnimationFrame(rafId);
+        cancelRaf();
         video.pause();
         if (recorder.state !== 'inactive') recorder.stop();
         recordStream.getTracks().forEach((track) => track.stop());
@@ -887,7 +1260,7 @@ async function convertToWebm(
     }
 
     drawing = false;
-    cancelAnimationFrame(rafId);
+    cancelRaf();
     video.pause();
     if (recorder.state !== 'inactive') recorder.stop();
     await stopped;
@@ -902,7 +1275,17 @@ async function convertToWebm(
       height: H,
     };
   } finally {
-    cancelAnimationFrame(rafId);
+    if (rafId) {
+      if (typeof cancelAnimationFrame === 'function') {
+        try {
+          cancelAnimationFrame(rafId);
+        } catch {}
+      } else {
+        try {
+          clearTimeout(rafId);
+        } catch {}
+      }
+    }
     video.pause();
     if (audioCtx) {
       try {
@@ -915,17 +1298,89 @@ async function convertToWebm(
   }
 }
 
-/* ---------------- gif (encoder inline mínimo) ---------------- */
-
-/** Mapea RGBA a índices de paleta global 3-3-2 (256 colores, sin dithering). */
-function mapTo332(data: Uint8ClampedArray): Uint8Array {
-  const out = new Uint8Array((data.length / 4) | 0);
-  for (let i = 0, j = 0; i < data.length; i += 4, j++) {
-    const r = Math.round((data[i] * 7) / 255);
-    const g = Math.round((data[i + 1] * 7) / 255);
-    const b = Math.round((data[i + 2] * 3) / 255);
-    out[j] = ((r << 5) | (g << 2) | b) & 0xff;
+async function convertToWebm(
+  file: File,
+  opts: ConvertVideoOptions,
+  onProgress?: (p: number) => void,
+  signal?: AbortSignal,
+): Promise<ConvertVideoResult> {
+  if (typeof VideoEncoder !== 'undefined' && typeof VideoFrame !== 'undefined') {
+    try {
+      return await convertToWebmWithWebCodecs(file, opts, onProgress, signal);
+    } catch (e) {
+      if (signal?.aborted) throw e;
+      // Fallback transparente a MediaRecorder si WebCodecs falla
+    }
   }
+  return convertToWebmWithMediaRecorder(file, opts, onProgress, signal);
+}
+
+/* ---------------- gif (encoder inline con Floyd-Steinberg dithering) ---------------- */
+
+/** Mapea RGBA a índices de paleta global 3-3-2 aplicando difusión de error Floyd-Steinberg. */
+function mapTo332WithDither(data: Uint8ClampedArray, width: number, height: number): Uint8Array {
+  const total = width * height;
+  const out = new Uint8Array(total);
+  const rArr = new Float32Array(total);
+  const gArr = new Float32Array(total);
+  const bArr = new Float32Array(total);
+
+  for (let i = 0, j = 0; i < total; i++, j += 4) {
+    rArr[i] = data[j];
+    gArr[i] = data[j + 1];
+    bArr[i] = data[j + 2];
+  }
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const curR = Math.min(255, Math.max(0, rArr[idx]));
+      const curG = Math.min(255, Math.max(0, gArr[idx]));
+      const curB = Math.min(255, Math.max(0, bArr[idx]));
+
+      const rIndex = Math.min(7, Math.max(0, Math.round((curR * 7) / 255)));
+      const gIndex = Math.min(7, Math.max(0, Math.round((curG * 7) / 255)));
+      const bIndex = Math.min(3, Math.max(0, Math.round((curB * 3) / 255)));
+
+      out[idx] = ((rIndex << 5) | (gIndex << 2) | bIndex) & 0xff;
+
+      const quantR = Math.round((rIndex * 255) / 7);
+      const quantG = Math.round((gIndex * 255) / 7);
+      const quantB = Math.round((bIndex * 3) / 255);
+
+      const errR = curR - quantR;
+      const errG = curG - quantG;
+      const errB = curB - quantB;
+
+      if (x + 1 < width) {
+        const i = idx + 1;
+        rArr[i] += (errR * 7) / 16;
+        gArr[i] += (errG * 7) / 16;
+        bArr[i] += (errB * 7) / 16;
+      }
+      if (y + 1 < height) {
+        if (x > 0) {
+          const i = (y + 1) * width + (x - 1);
+          rArr[i] += (errR * 3) / 16;
+          gArr[i] += (errG * 3) / 16;
+          bArr[i] += (errB * 3) / 16;
+        }
+        {
+          const i = (y + 1) * width + x;
+          rArr[i] += (errR * 5) / 16;
+          gArr[i] += (errG * 5) / 16;
+          bArr[i] += (errB * 5) / 16;
+        }
+        if (x + 1 < width) {
+          const i = (y + 1) * width + (x + 1);
+          rArr[i] += (errR * 1) / 16;
+          gArr[i] += (errG * 1) / 16;
+          bArr[i] += (errB * 1) / 16;
+        }
+      }
+    }
+  }
+
   return out;
 }
 
@@ -1077,7 +1532,7 @@ async function convertToGif(
       await seekVideo(video, t);
       if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');
       ctx.drawImage(video, 0, 0, W, H);
-      frames.push(mapTo332(ctx.getImageData(0, 0, W, H).data));
+      frames.push(mapTo332WithDither(ctx.getImageData(0, 0, W, H).data, W, H));
       onProgress?.(0.05 + (0.85 * (i + 1)) / count);
     }
     if (signal?.aborted) throw new DOMException('Operación cancelada', 'AbortError');

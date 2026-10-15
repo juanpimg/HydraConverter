@@ -1,7 +1,8 @@
 {
   "name": "hydra-convert",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.2",
+  "description": "HydraConvert — conversor de vídeo, audio e imagen 100% local en el navegador (WebCodecs, sin backend)",
   "type": "module",
   "engines": {
     "node": ">=18"
@@ -14,7 +15,8 @@
     "test": "node scripts/test-convert.mjs",
     "test:video": "node scripts/test-video-matrix.mjs",
     "test:firefox": "node scripts/test-firefox-convert.mjs",
-    "test:cancel-zip": "node scripts/test-cancel-and-zip.mjs"
+    "test:cancel-zip": "node scripts/test-cancel-and-zip.mjs",
+    "test:audit": "node scripts/test-audit.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -23,6 +25,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tailwind-merge": "^2.6.0",
+    "webm-muxer": "^5.1.4",
     "zustand": "^4.5.5"
   },
   "devDependencies": {

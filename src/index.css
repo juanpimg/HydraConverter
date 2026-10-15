@@ -9,8 +9,19 @@
   }
 
   body {
-    @apply bg-dark-950 text-slate-100;
+    @apply bg-zinc-950 text-zinc-100;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  ::selection {
+    background-color: rgba(16, 185, 129, 0.25);
+    color: #f4f4f5;
+  }
+
+  /* Focus visible estricto WCAG AA */
+  :focus-visible {
+    outline: 2px solid #10b981;
+    outline-offset: 2px;
   }
 
   /* Custom scrollbar */
@@ -43,6 +54,15 @@
   select,
   textarea {
     color-scheme: dark;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, ::before, ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 }
 
